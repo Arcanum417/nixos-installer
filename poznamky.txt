@@ -1,0 +1,63 @@
+    1  parted /dev/sda -- mklabel msdos
+    2  parted /dev/sda -- mkpart primary 1MB
+    3  parted /dev/sda -- mkpart primary 1MB -1MB
+    4  lsblk
+    5  parted /dev/sda -- set 1 boot on
+    6  lsblk
+    7  zpool create -f -O mountpoint=none -O atime=off -o ashift=12 -O acltype=posixacl -O xattr=sa -O compression=lz4 zroot /dev/sda1
+    8  zfs create -o mountpoint=legacy zroot/root      # For /
+    9  zfs create -o mountpoint=legacy zroot/root/home # For /home
+   10  zfs create -o mountpoint=legacy zroot/root/nix  # For /nix
+   11  mount -t zfs zroot/root /mnt
+   12  mkdir /mnt/{nix,home}
+   13  mount -t zfs zroot/root/nix /mnt/nix
+   14  mount -t zfs zroot/root/home /mnt/home
+   15  nixos-generate-config --root /mnt
+   16  cd /mnt/
+   17  ls
+   18  cd etc/nixos/
+   19  ls
+   20  zpool status
+   21  ls
+   22  cat hardware-configuration.nix
+   23  zfs list
+   24  nano configuration.nix
+   25  nano configuration.nix
+   26  nano unique.nix
+   27  nano unique.nix
+   28  tr -dc 0-9a-f < /dev/urandom | head -c 8
+   29  tr -dc 0-9a-f < /dev/urandom | head -c 8
+   30  nano unique.nix
+   31  mkdir /mnt/docker
+   32  ls /mnt/
+   33  rm -r /mnt/docker/
+   34  nano unique.nix
+   35  zfs create -o mountpoint=legacy zroot/docker
+   36  zfs create -o mountpoint=legacy zroot/docker_apps
+   37  mkdir /mnt/mnt
+   38  mkdir /mnt/mnt/docker
+   39  mkdir /mnt/mnt/docker_apps
+   40  mount -t zfs zroot/docker /mnt/mnt/docker
+   41  mount -t zfs zroot/docker_apps /mnt/mnt/docker_apps
+   42  nixos-install
+   43  nano hardware-configuration.nix
+   44  Nixos-generate-config --help
+   45  nixos-generate-config --help
+   46  nixos-generate-config
+   47  nano hardware-configuration.nix
+   48  df -h
+   49  nano hardware-configuration.nix --show-hardware-config
+   50  nixos-generate-config --show-hardware-config
+   51  ls
+   52  rm hardware-configuration.nix
+   53  nixos-generate-config
+   54  nixos-generate-config --root /mnt
+   55  ls
+   56  cat hardware-configuration.nix
+   57  nano  unique.nix
+   58  nano unique.nix
+   59  nixos-generate-config --root /mnt
+   60  pwd /root
+   61  ls /root
+   62  ls -la /root
+   63  history

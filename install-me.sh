@@ -176,33 +176,4 @@ if [[ $REPLY =~ ^[Nn]$ ]]; then
 fi
 
 cp -r -f ./*.nix /mnt/etc/nixos/
-# toto tam skontroluj and do # nixos-install
-
-#zpool create -O mountpoint=none -O atime=off -o ashift=12 -O acltype=posixacl -O xattr=sa -O compression=lz4   -o feature@encryption=enabled -O encryption=on -O keylocation=file:///root/.zfs-encrypt.key -O keyformat=raw zdata raidz /dev/sd9 /dev/sd8
-#zfs create -o mountpoint=legacy zdata/docker
-#zfs create -o mountpoint=legacy zdata/docker_apps
-
-#  fileSystems."/mnt/docker" =
-#    { device = "zdata/docker";
-#      fsType = "zfs";
-#    };
-
-#  fileSystems."/mnt/docker_apps" =
-#    { device = "zdata/docker_apps";
-#      fsType = "zfs";
-#    };
-
-#nix-shell -p gptfdisk
-#dd if=/dev/zero bs=512  count=1 of=/dev/nvme1n1
-#dd if=/dev/zero bs=512  count=1 of=/dev/nvme0n1
-#wipefs -fa /dev/nvme1n1
-#wipefs -fa /dev/nvme0n1
-#sgdisk --zap-all /dev/nvme1n1
-#sgdisk --zap-all /dev/nvme0n1
-
-#lsblk -o "NAME,MODEL,SERIAL,SIZE,STATE,UUID,FSTYPE,MODE,TYPE,VENDOR"
-
-#https://github.com/JayRovacsek/nix-config/tree/main/modules/nvidia
-
-#nixos-rebuild switch
-
+#udelej si co potrebujes uprav finish-me.sh a spusti ten
