@@ -22,32 +22,38 @@
   services.zfs.autoScrub.enable = true;
   services.zfs.autoScrub.pools = [ ];
 
-  # Use the systemd-boot EFI boot loader. Nah Grub
-  #boot.loader.systemd-boot.enable = true;
-  boot.loader.efi.canTouchEfiVariables = true;
+  nixpkgs.config.allowUnfree = true;
+  
+  #Grub EFI vec je rozbita, musis jet AsRemovable
+  boot.loader.efi.canTouchEfiVariables = false;
 
   # This is the regular setup for grub on UEFI which manages /boot
   # automatically.
-  boot.loader.grub.enable = true;
-  boot.loader.grub.efiSupport = true;
-  boot.loader.grub.device = "nodev";
-  boot.loader.grub.memtest86.enable = true;
-  nixpkgs.config.allowUnfree = true;
+  boot.loader.grub = {
+    enable = true;
+    efiSupport = true;
+    memtest86.enable = true;
+    efiInstallAsRemovable = true;
+
+    # This will mirror all UEFI files, kernels, grub menus and things
+    # needed to boot to the other drive.
+    mirroredBoots = [
+      {
+        devices = [ "nodev" ];
+
+        path = "/boot-fallback";
+      }
+      {
+        devices = [ "nodev" ];
+        path = "/boot";
+
+      }
+    ];
+  };
   
-  # This will mirror all UEFI files, kernels, grub menus and things
-  # needed to boot to the other drive.
-  boot.loader.grub.mirroredBoots = [
-    {
-      devices = [ "nodev" ];
-
-      path = "/boot-fallback";
-    }
-  ];
-
   #if either of them dies, don't freak out
   fileSystems."/boot".options = [ "nofail" ];
   fileSystems."/boot-fallback".options = [ "nofail" ];
-  
 
   # Set your time zone.
   time.timeZone = "Europe/Bratislava";
