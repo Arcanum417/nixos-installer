@@ -16,6 +16,7 @@
   # ZFS boot settings.
   boot.supportedFilesystems = [ "zfs" ];
   boot.zfs.devNodes = "/dev/";
+  boot.zfs.forceImportRoot = false;
 
   # ZFS maintenance settings.
   services.zfs.trim.enable = true;
