@@ -1,12 +1,55 @@
 # Audit — nixos-installer
 
-Reviewed at commit `72c70c7`. Nothing was executed; this is a static review of
-`install-me.sh`, `finish-me.sh`, `finish-me-bios.sh`, `configuration.nix`,
-`configuration-bios.nix`, `unique.nix`.
+Review of the installer **as it stood at commit `72c70c7`**, before the rewrite.
+Kept as the record of what was wrong and why the current design looks the way it
+does. `README.md` describes the current tool; `CLAUDE.md` describes its
+architecture.
 
 NixOS behaviour claims below were checked against the actual nixpkgs sources
 (`nixos-25.05`: `tasks/filesystems/zfs.nix`, `system/boot/loader/grub/grub.nix`,
 `install-grub.pl`) and `dosfstools`/`libfdisk` sources, not from memory.
+
+## Status
+
+| | Finding | Resolution |
+|---|---|---|
+| C1 | Degraded mirror is silent | **Fixed** — `zfs-health.nix`: weekly scrub, ZED settings, 15-min timer checking `zpool status -x` + boot-mirror consistency; fails the unit, writes `/run/zfs-health/alert` (shown at login), POSTs to `/etc/zfs-alert-url` |
+| C2 | `boot.zfs.devNodes = "/dev/"` | **Fixed** — `/dev/disk/by-id` in `disk-layout.nix` |
+| C3 | `/boot` mirror drifts silently | **Fixed** — `nofail` kept, but the health check compares the file set on every boot mount and reports a stale copy |
+| C4 | ZFS partition fills the disk | **Fixed** — every ZFS partition stops 1 GiB short (`END_RESERVE_BYTES`), sized off the smallest selected disk |
+| C5 | Pool carries the live ISO's hostid | **Fixed** — `install-me.sh` reads `networking.hostId` from `unique.nix` and sets the ISO's hostid before creating any pool; pools are exported at the end |
+| H1 | `sfdisk --dump \| sfdisk` clones GPT GUIDs | **Fixed** — each disk is partitioned independently at install; `replace-boot-disk.sh` uses `sgdisk --replicate` followed by `--randomize-guids` |
+| H2 | `mkfs.vfat` races udev | **Fixed** — `wait_for_nodes` polls for the by-id nodes with `udevadm settle` before any `mkfs` |
+| H3 | ESP on the FAT16/FAT32 boundary | **Fixed** — ESP is 2 GiB and `mkfs.vfat -F 32` is explicit |
+| H4 | Same disk selectable twice | **Fixed** — `select_disks` excludes already-chosen disks, the live medium, and current pool members; `assert_disks_free` refuses a disk an imported pool is using |
+| H5 | by-id guessed from `lsblk` columns | **Fixed** — `by_id_path` asks udev (`udevadm info --query=symlink`) and ranks model_serial names above `wwn`/`eui`; a disk with no stable by-id is marked unusable |
+| M1 | Data key on the unencrypted root pool | **Documented, not changed** — the threat model (safe disk RMA, not theft) is now stated in `README.md`. The key *is* now actually copied into the installed system, which the old script only warned about. |
+| M2 | Data pool never imported at boot | **Fixed** — `disk-layout.nix` emits `boot.zfs.extraPools` and `fileSystems` entries for every legacy-mountpoint dataset |
+| M3 | `finish-me-bios.sh` a byte-identical copy | **Fixed** — both deleted; `add-data-pool.sh` replaces them and works on a running machine |
+| M4 | Nothing selected the BIOS config | **Fixed** — one `configuration.nix`; firmware lives in `disk-layout.json` |
+| M5 | Disk serials hardcoded in a shared file | **Fixed** — the only place disk IDs appear is the generated `disk-layout.json` |
+| M6 | The two configs had diverged | **Fixed** — there is only one now; `stateVersion` comes from the installing release and is `mkDefault` so `unique.nix` can pin it |
+| M7 | No verification of the pool | **Fixed** — the installer asserts `mirror-0`, checks every ZFS partition is byte-identical, prints `zpool status` and requires confirmation |
+| S1 | No pinning | **Not done** — still not a flake. This remains the biggest structural gap; see `README.md` "Known limits". |
+| S2 | Installer could not finish alone | **Fixed** — `install-me.sh` runs end to end; the data pool is create / import / skip |
+| S3 | Missing datasets and pool guards | **Partly** — `zroot/reserved` (2 GiB `refreservation`) and `autoexpand=on` added; `/var/log` deliberately left alone |
+| S4 | Firewall off for everyone | **Softened** — `lib.mkDefault false`, so a machine can turn it on from `unique.nix` |
+| S5 | No README | **Fixed** — `README.md`, including the disk-replacement procedure (scripted and manual) |
+
+Two findings were added during the rewrite and are worth keeping in mind:
+
+- **BIOS + dead disk + GRUB version bump.** `install-grub.pl` only re-runs
+  `grub-install` when something differs (version, devices, `--install-bootloader`),
+  and it `die`s if a configured device is gone. So a degraded BIOS machine
+  rebuilds fine day to day but fails on the next big upgrade. Hence
+  `replace-boot-disk.sh --drop`.
+- **`/boot` fills up.** `copyKernels` is forced on whenever `/boot` is a separate
+  filesystem, and nothing bounded the number of generations. Now `/boot` is
+  2 GiB and `configurationLimit = 15`.
+
+---
+
+## The original findings
 
 ---
 
@@ -517,11 +560,5 @@ config.
 
 ## Suggested order
 
-| Priority | Items | Why |
-|---|---|---|
-| 1 | C1, C2 | Without these you cannot *detect* or *act on* a failure. Cheap, config-only. |
-| 2 | C5, H2, H4 | Correctness bugs that bite during install or first boot. |
-| 3 | C3, C4 | Make the redundancy real rather than nominal. |
-| 4 | M4, M5, M3 | The BIOS path is currently non-functional end to end. |
-| 5 | H1, H3, H5, M1, M2 | Robustness and the encryption story. |
-| 6 | S1 | The structural change that makes the recovery promise hold over years. |
+Superseded by the Status table at the top of this file. Everything except S1
+(flake pinning) and the deliberate decisions noted there has been implemented.

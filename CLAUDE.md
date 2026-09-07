@@ -4,154 +4,139 @@ Guidance for Claude Code (and humans) working in this repository.
 
 ## What this repo is
 
-A **hand-rolled NixOS bare-metal installer for two-disk mirrored machines.**
+A **bare-metal NixOS installer for machines that boot off an N-way ZFS root
+mirror.** The design goal is that a dead server can be rebuilt from exactly
+three things: this repo, that machine's `unique.nix`, and (if it has a data
+pool) `/root/.zfs-encrypt.key`.
 
-The stated goal: recover *any* machine from a NixOS live ISO, given only
-(a) this repo, (b) a per-machine `unique.nix`, and (c) the ZFS encryption key
-for the data pool. Everything else is rebuilt from scratch.
+Supports **UEFI** (GRUB as removable: `EFI/BOOT/BOOTX64.EFI`, no NVRAM entries)
+and **BIOS** (GRUB in each disk's MBR + `EF02`). One code path; the firmware is
+detected at install time and recorded in `disk-layout.json`.
 
-It is **not** a flake, **not** a NixOS module, and has **no** CI, tests, or
-lockfile. It is a pile of bash + `.nix` files copied verbatim into
-`/mnt/etc/nixos/` during installation.
+Not a flake, no lockfile, no CI. See `README.md` for the user-facing procedures
+and `AUDIT.md` for what the previous version got wrong and why it changed.
 
-## SAFETY — read before running anything
+## SAFETY
 
-`install-me.sh`, `finish-me.sh`, and `finish-me-bios.sh` **destroy every
-partition on the two disks the operator selects** (`sgdisk --zap-all`,
-`wipefs -fa`, `dd`). They are meant to run as root from a NixOS live ISO
-against blank hardware.
+`install-me.sh`, `replace-boot-disk.sh` and `add-data-pool.sh` **destroy every
+disk the operator selects** (`sgdisk --zap-all`, `wipefs -fa`,
+`zpool labelclear`). Never execute them in a dev container, in CI, or on a
+working machine. Static checks and evaluation only.
 
-**Never execute them in a dev container, a CI job, or on a working machine.**
-Static checks only. In this environment the only tool available is
-`bash -n <script>` (no `nix`, no `shellcheck`, no `sgdisk`, no `zpool`).
+## Architecture: the JSON seam
+
+The one idea worth understanding before changing anything:
+
+```
+disk-layout.json   <- generated per machine (disk by-id paths, firmware, parts)
+       |  builtins.fromJSON
+       v
+disk-layout.nix    <- static, ships in the repo; fileSystems + GRUB + ZFS opts
+```
+
+Every machine-specific disk fact lives in `disk-layout.json`. `disk-layout.nix`
+is the same file on every machine. So swapping a disk is a one-field JSON edit
+plus a rebuild — never hand-edited Nix, and never a regenerated
+`hardware-configuration.nix`.
+
+`lib/common.sh` owns both sides of that seam: `write_disk_layout_json` and
+`read_disk_layout`. If you change the schema, change both, plus
+`disk-layout.nix`, and bump `version`.
 
 ## File map
 
 | File | Role |
 |---|---|
-| `install-me.sh` | **Stage 1.** Detects UEFI vs BIOS, prompts for DISK1/DISK2, partitions both, creates the `zroot` mirror + datasets, mounts `/mnt`, runs `nixos-generate-config`, copies `./*.nix` into `/mnt/etc/nixos/`. Does **not** run `nixos-install`. |
-| `finish-me.sh` | **Stage 2.** Prompts for two *more* disks, wipes them, creates the encrypted `zdata` mirror (`docker`, `docker_apps`), regenerates hardware config, runs `nixos-install`. Marked `#edit me` — expected to be hand-edited per machine. |
-| `finish-me-bios.sh` | **Byte-identical duplicate of `finish-me.sh`** (only the trailing newline differs). Nothing in it is BIOS-specific. |
-| `configuration.nix` | Shared system config, **UEFI variant**. GRUB EFI + `efiInstallAsRemovable` + `mirroredBoots` over `/boot` and `/boot-fallback`. Imports `hardware-configuration.nix` and `unique.nix`. |
-| `configuration-bios.nix` | **BIOS variant.** GRUB i386-pc, `zfsSupport`, `copyKernels`. Currently contains **hardcoded Intel SSD serials** for one specific machine. Nothing selects it automatically — the operator must rename it over `configuration.nix`. |
-| `unique.nix` | **The per-machine file.** Hostname, `networking.hostId`, GPU drivers, docker networking, NFS mounts, node_exporter timers. This is the file the recovery story says you keep around. Ships with placeholders (`lehostname`, `ZmenMa`). |
-| `poznamky.txt` | Raw `history` dump from the original manual install. Scratch notes, not executable. |
-| `other/node_exporter/smart/` | `smartmon.sh`, `nvme_metrics.sh` — Prometheus textfile-collector scripts, referenced by the commented-out systemd timers in `unique.nix`. |
+| `install-me.sh` | The installer. Reads hostId from `unique.nix`, sets the ISO's hostid, partitions N disks, builds the mirror, optionally creates *or imports* a data pool, writes config, runs `nixos-install`, exports the pools. `nix-shell` shebang. |
+| `replace-boot-disk.sh` | Replace / `--add` / `--drop` a mirror member, then `nixos-rebuild boot --install-bootloader`. Plain `bash` shebang on purpose — a degraded machine may have no network, so it relies on tools `configuration.nix` installs. |
+| `add-data-pool.sh` | Create or adopt a data pool on a running machine. Replaces the old `finish-me.sh`. Plain `bash` shebang, same reason. |
+| `lib/common.sh` | All shared bash. Sourced, never executed. Prompts, disk menu, by-id resolution via udev, partitioning, JSON read/write. |
+| `configuration.nix` | Shared system config, identical on every machine. No disk or bootloader content. |
+| `disk-layout.nix` | Pools, `fileSystems`, GRUB, ZFS options — all derived from `disk-layout.json`. |
+| `zfs-health.nix` | Weekly scrub, ZED settings, and the 15-minute health timer that catches a degraded pool or a stale boot mirror. |
+| `unique.nix` | Template for the per-machine file. The real one is supplied by the operator. |
+| `other/node_exporter/smart/` | Prometheus textfile collectors, wired up from `unique.nix` if wanted. |
 
-## Install flow
+There is deliberately **no** `configuration-bios.nix`, `finish-me.sh`, or
+`finish-me-bios.sh` any more; see `AUDIT.md` §M3/§M4.
 
-```
-NixOS live ISO, root shell
-  └─ ./install-me.sh          # partitions + zroot mirror + copies configs
-  └─ (hand-edit /mnt/etc/nixos/unique.nix: hostName, hostId)
-  └─ ./finish-me.sh           # zdata mirror + nixos-install
-  └─ reboot
-```
+## Invariants — do not break these
 
-Both scripts are `nix-shell` shebang scripts (`-p bash gptfdisk`).
-
-## Disk & pool layout
-
-**UEFI** (per disk, table cloned DISK1 → DISK2 with `sfdisk --dump | sfdisk`):
-
-| Part | Type | Size | Contents |
-|---|---|---|---|
-| 3 | `EF00` | 512 MiB | ESP, vfat, mounted `/boot` (DISK1) and `/boot-fallback` (DISK2) |
-| 1 | `BF01` | rest | `zroot` mirror member |
-
-**BIOS:**
-
-| Part | Type | Size | Contents |
-|---|---|---|---|
-| 2 | `EF02` | 2 MiB | BIOS boot partition (no filesystem) |
-| 3 | `8300` | 512 MiB | ext4, `/boot` (DISK1) / `/boot-fallback` (DISK2) |
-| 1 | `BF01` | rest | `zroot` mirror member |
-
-**Pools:**
-
-```
-zroot            mirror DISK1-part1 DISK2-part1   (unencrypted)
-  zroot/root          -> /        mountpoint=legacy
-  zroot/root/nix      -> /nix
-  zroot/root/home     -> /home
-
-zdata            mirror DISK3 DISK4 (whole disks, encrypted, raw keyfile)
-  zdata/docker        -> /mnt/docker
-  zdata/docker_apps   -> /mnt/docker_apps
-```
-
-Pool properties used throughout: `ashift=12`, `atime=off`, `compression=lz4`,
-`acltype=posixacl`, `xattr=sa`, `mountpoint=none` at pool level with
-`mountpoint=legacy` on every dataset (so `fileSystems.*` in Nix owns mounting).
-
-`zdata` uses `-O encryption=on -O keyformat=raw
--O keylocation=file:///root/.zfs-encrypt.key`. The key must exist **both** in
-the live ISO's `/root/` and in `/mnt/root/` before `nixos-install` — the
-scripts do not copy it; see the Slovak prompt in `finish-me.sh`.
-
-## Boot redundancy model
-
-Redundancy is **two independent mechanisms**, and only the first is automatic:
-
-1. **`zroot` is a real ZFS mirror.** Self-healing, scrubbed weekly by
-   `services.zfs.autoScrub`.
-2. **`/boot` and `/boot-fallback` are two unrelated filesystems**, kept in sync
-   *only* by `nixos-rebuild` writing to both via `boot.loader.grub.mirroredBoots`.
-   Both are marked `nofail`, so a rebuild with one of them unmounted succeeds
-   silently and leaves that disk stale. There is no health check for this.
-
-On UEFI, `efiInstallAsRemovable = true` + `canTouchEfiVariables = false` means
-GRUB is written to `EFI/BOOT/BOOTX64.EFI` on *both* ESPs with no NVRAM entries,
-so either disk boots standalone. (Verified: `grub.nix` emits one
-`install-grub.pl` invocation per `mirroredBoots` entry, each with its own
-`--efi-directory` and `--removable`.)
+- **hostId is load-bearing.** ZFS stamps it into the pool labels.
+  `install-me.sh` reads it from `unique.nix` and sets the live ISO's hostid
+  *before creating any pool*. That is what makes the first boot import cleanly
+  with `boot.zfs.forceImportRoot = false`, and what lets a dirty pool from a
+  crashed machine be imported without `-f`.
+- **Never clone a partition table without randomising GUIDs.**
+  `sgdisk --replicate` must always be followed by `sgdisk --randomize-guids`.
+  The old installer used `sfdisk --dump | sfdisk`, which duplicates `label-id`
+  and every partition `uuid`.
+- **Never `mkfs` straight after partitioning.** Go through `wait_for_nodes`,
+  which polls for the by-id nodes and calls `udevadm settle`.
+- **Every ZFS partition stops 1 GiB short of the end of the disk**
+  (`END_RESERVE_BYTES`). That slack is the only reason a slightly-smaller
+  replacement disk is usable.
+- **Root pool stays on `lz4`, data pool uses `zstd`.** GRUB's ZFS reader is the
+  weakest link in the boot path; this is a recovery tool.
+- **`/boot` mount points are stored per disk in the JSON**, not derived from
+  array position, so `--drop` does not renumber and remount the survivors.
+- **`nofail` on the boot mounts is intentional** and is paired with
+  `zfs-health.nix`. Do not remove one without the other.
 
 ## Conventions
 
-- Comments and prompts are in **Czech/Slovak**, mixed with English. Keep the
-  existing language in a file rather than translating it wholesale.
-- `#edit me` / `#UPRAV SI SCRIPT!` mark the spots the operator is expected to
-  hand-edit before running. Treat them as intentional, not as TODOs to remove.
-- Indentation is inconsistent (mixed tabs and spaces, notably in `install-me.sh`
-  BIOS branch and `configuration-bios.nix`). Match the surrounding block.
-- **Machine-specific values belong in `unique.nix`**, not in `configuration*.nix`.
-  `configuration-bios.nix` currently violates this.
-- `system.stateVersion` is currently different between the two configs
-  (`22.05` UEFI, `25.11` BIOS). Do not "unify" this without asking — it changes
-  stateful defaults.
+- Bash: `set -Eeuo pipefail` comes from `lib/common.sh`. Note that `A && B` with
+  a false `A` is *exempt* from `set -e` (verified), so the `cmd && flag=1` idiom
+  used throughout is safe.
+- `zfs-health.nix` uses `pkgs.writeShellApplication`, which runs **shellcheck at
+  build time**. A shellcheck violation there is a broken `nixos-rebuild`, not a
+  warning. Build it before trusting a change (see below).
+- Comments and prompts are a mix of English and Czech/Slovak. Keep a file's
+  existing language rather than translating wholesale.
+- Machine-specific values belong in `unique.nix` or `disk-layout.json`, never in
+  `configuration.nix`.
 
-## Known problems
+## Validating changes
 
-There is a full audit in **`AUDIT.md`**, ordered by severity. Read it before
-changing the partitioning or pool-creation code. The short version:
-
-- `sfdisk --dump DISK1 | sfdisk DISK2` clones the GPT **disk GUID and every
-  partition GUID**, giving both disks identical `PARTUUID`s.
-- `mkfs.vfat` runs before udev has created the `-part3` by-id symlinks
-  (the `sleep 5` is *after* it).
-- Nothing prevents selecting the same disk as both DISK1 and DISK2.
-- The by-id path is guessed from `lsblk` column positions and assumes
-  `ata-` or `nvme-`; USB / virtio / SAS / blank-MODEL disks break it.
-- `boot.zfs.devNodes = "/dev/"` (UEFI config) makes `zpool status` report
-  `sda1`/`nvme0n1p1` instead of stable by-id names — bad when you need to
-  identify which physical disk to pull.
-- The `zdata` key lives on the *unencrypted* `zroot`, on the same machine.
-- `zdata` is never imported at boot (`boot.zfs.extraPools` is unset and no
-  `fileSystems` entry exists for it).
-
-## Validating changes here
-
-No nix toolchain in this environment. What you can do:
+No nix toolchain is installed by default, but a standalone one can be fetched
+and the whole config genuinely evaluated — do this rather than eyeballing Nix:
 
 ```sh
-bash -n install-me.sh finish-me.sh finish-me-bios.sh   # syntax only
+# shell syntax
+bash -n install-me.sh replace-boot-disk.sh add-data-pool.sh lib/common.sh
+
+# standalone nix (releases.nixos.org and channels.nixos.org are reachable;
+# github.com tarballs are NOT - the session is scoped to this repo)
+curl -sSL -o nix.tar.xz https://releases.nixos.org/nix/nix-2.24.10/nix-2.24.10-x86_64-linux.tar.xz
+tar xf nix.tar.xz && mkdir -p /nix && cp -a nix-*/store /nix/store
+export PATH=/nix/store/*-nix-2.24.10/bin:$PATH
+
+curl -sSL -o nixexprs.tar.xz https://channels.nixos.org/nixos-25.05/nixexprs.tar.xz
+tar xf nixexprs.tar.xz
 ```
 
-For real validation the change has to be tried on a VM with two virtual disks
-(UEFI and BIOS firmware separately). Say so explicitly rather than claiming a
-change is verified.
+Then build a scratch `/etc/nixos` (a `hardware-configuration.nix` stub with
+`nixpkgs.hostPlatform`, a real `unique.nix`, and a `disk-layout.json` produced by
+sourcing `lib/common.sh` and calling `write_disk_layout_json`) and evaluate it
+through `nixos/lib/eval-config.nix`. Check **both** `bootMode` values:
+
+```sh
+nix-instantiate --eval --strict --json -E \
+  'let c = (import ./eval.nix { dir = ./.; }); in
+   { fs = builtins.attrNames c.fileSystems;
+     mirrors = c.boot.loader.grub.mirroredBoots;
+     assertions = map (a: a.message) (builtins.filter (a: !a.assertion) c.assertions); }'
+
+nix-instantiate -E 'let c = (import ./eval.nix { dir = ./.; }); in c.system.build.toplevel'
+nix-build --no-out-link -E '...zfs-health-check...'   # runs shellcheck
+```
+
+What cannot be checked here: anything that touches real disks. Partitioning,
+`zpool` behaviour, GRUB installation and actually booting need a VM with two or
+three virtual disks, tested separately under UEFI and BIOS firmware. Say so
+explicitly rather than implying a change is verified end to end.
 
 ## Repo etiquette
 
-- Branch: work happens on `claude/*` branches, `main` is the published state.
+- Work on `claude/*` branches; `main` is the published state.
 - No PR unless explicitly asked.
