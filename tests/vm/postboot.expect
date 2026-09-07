@@ -2,7 +2,7 @@
 #
 # Boots the installed system and dumps a set of facts about it.
 #
-#   postboot.expect PORT LOGFILE
+#   postboot.expect LOGFILE PORT
 #
 # Prints one "PROBE:<name>:<value>" line per fact and nothing else that the
 # caller cares about; tests/vm-boot.sh parses those and does the asserting, so
@@ -12,16 +12,31 @@
 # on ttyS0 only if GRUB found a kernel, the initrd imported the root pool, and
 # systemd got as far as a getty.
 
-set port    [lindex $argv 0]
-set logfile [lindex $argv 1]
+set logfile [lindex $argv 0]
+set port    [lindex $argv 1]
 
+# Written here rather than by redirecting stdout: expect buffers a redirected
+# stdout, which hides progress during a long run and truncates the evidence if
+# it is killed. log_file also captures send_user, so "FAILED:" reaches the log.
 log_file -a $logfile
 
 set boot_timeout 1800
 set cmd_timeout  300
 
+set send_slow {1 .03}
+
+# A booting kernel produces far more output than expect's default 2000-byte
+# match buffer holds. When it overflows expect discards the oldest half, and
+# a marker that arrived in that half is never matched -- the transcript shows
+# the text arriving while expect sits waiting for it.
+match_max 200000
+
 proc bail {code msg} {
+    # send_log as well as send_user: log_file records only the spawned
+    # process's I/O, so a send_user-only line never reaches the transcript
+    # that the suite greps for "FAILED:".
     send_user "\n\[postboot.expect\] FAILED: $msg\n"
+    send_log  "\n\[postboot.expect\] FAILED: $msg\n"
     exit $code
 }
 
@@ -50,19 +65,19 @@ serial_connect
 # ---------------------------------------------------------------- reach a shell
 
 set timeout $boot_timeout
-send "\r"
+send -s "\r"
 expect {
-    -re {\[root@[-a-z0-9]+:.*\]#} { }
-    -re {root@[-a-z0-9]+.*[#$] }  { }
+    -re {root@[-a-z0-9]+:[^\r\n]*\]#} { }
+    -re {root@[-a-z0-9]+:[^\r\n]*\]\$} { }
     "Emergency Mode"    { bail 20 "guest dropped into emergency mode" }
     "Failed to import"  { bail 21 "root pool did not import" }
     "Entering emergency shell" { bail 20 "guest dropped into emergency shell" }
-    eof     { reconnect_or_bail; send "\r"; exp_continue }
+    eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 22 "no shell on the serial console after ${boot_timeout}s (did GRUB boot?)" }
 }
 
-send "dmesg -n 1\r"
-expect -re {[#$] $}
+send -s "dmesg -n 1; echo QUIET-OK\r"
+expect { "QUIET-OK" { } timeout { } }
 
 set timeout $cmd_timeout
 
@@ -74,12 +89,11 @@ set timeout $cmd_timeout
 proc probe {name cmd} {
     global cmd_timeout
     set timeout $cmd_timeout
-    send "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
+    send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
     expect {
         -re "PROBE:$name:\[^\r\n\]*" { }
         timeout { send_user "\n\[postboot.expect\] probe $name timed out\n" }
     }
-    expect -re {[#$] $}
 }
 
 probe hostname       "hostname"
@@ -99,13 +113,13 @@ probe forceimport    "cat /proc/cmdline | tr ' ' '~'"
 probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI"
 probe health_check   "zfs-health-check || true"
 
-send "echo PROBES-DONE\r"
+send -s "echo PROBES-DONE\r"
 expect {
     "PROBES-DONE" { }
     timeout { }
 }
 
-send "poweroff\r"
+send -s "poweroff\r"
 expect {
     "Power down" { }
     eof          { }

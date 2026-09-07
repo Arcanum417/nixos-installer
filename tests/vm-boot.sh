@@ -83,10 +83,14 @@ probe () { # probe LOGFILE NAME -> value
     sed -n "s/.*PROBE:$2:\(.*\)/\1/p" "$1" | tail -n1 | tr -d '\r'
 }
 
+# The driver writes its own transcript via expect's log_file (unbuffered, and
+# it captures send_user too). Redirecting stdout here as well would only
+# duplicate it, and expect buffers a redirected stdout anyway -- which makes a
+# multi-hour phase impossible to watch while it runs.
 run_expect () { # run_expect SCRIPT LOGFILE ARGS...
     local script=$1 log=$2; shift 2
     : > "$log"
-    expect "$HERE/vm/$script" "$@" >>"$log" 2>&1
+    expect "$HERE/vm/$script" "$log" "$@" >/dev/null 2>&1
 }
 
 # A phase that cannot run because the one before it failed should not be
@@ -103,6 +107,11 @@ phase_install () { # phase_install NAME FIRMWARE PORT
         skip "$firmware: install-me.sh completes" "no serial-enabled installer ISO"
         PHASE_OK=0; return
     fi
+
+    # A previous run with VM_KEEP=1 may have left this VM running, and its QEMU
+    # would still hold the serial port while vm_define deletes the bundle out
+    # from under it.
+    vm_exists "$name" && vm_kill "$name"
 
     vm_define "$name" "$firmware" "$NDISKS" "$DISK_GB" "$port" "$BOOT_ISO" "$REPO_ISO"
     utm_reload

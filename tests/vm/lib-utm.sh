@@ -57,6 +57,17 @@ vm_kill () {
     while [[ $(vm_status "$name") == started ]] && (( waited < 60 )); do
         sleep 2; waited=$((waited+2))
     done
+    [[ $(vm_status "$name") != started ]] && return 0
+
+    # utmctl talks to UTM over AppleEvents and both can wedge: a stuck VM
+    # answers `stop --force` with OSStatus -1712 (event timed out) and stays
+    # "started" forever, which would hang an unattended run. The QEMU process
+    # is the ground truth, so go around UTM and kill it.
+    pkill -9 -f "$(vm_bundle "$name")" 2>/dev/null || true
+    waited=0
+    while [[ $(vm_status "$name") == started ]] && (( waited < 30 )); do
+        sleep 2; waited=$((waited+2))
+    done
     [[ $(vm_status "$name") != started ]]
 }
 

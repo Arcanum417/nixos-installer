@@ -2,7 +2,7 @@
 #
 # Drives a full install-me.sh run over the guest's serial console.
 #
-#   install.expect PORT NDISKS FIRMWARE LOGFILE
+#   install.expect LOGFILE PORT NDISKS FIRMWARE
 #
 # Exits 0 only when the installer prints its own completion line. Any other
 # outcome (a FATAL from lib/common.sh, a shell that never appears, a timeout)
@@ -13,11 +13,15 @@
 # DESTROY. Every pattern below is a run of plain text with no escape sequence
 # inside it.
 
-set port     [lindex $argv 0]
-set ndisks   [lindex $argv 1]
-set firmware [lindex $argv 2]
-set logfile  [lindex $argv 3]
+set logfile  [lindex $argv 0]
+set port     [lindex $argv 1]
+set ndisks   [lindex $argv 2]
+set firmware [lindex $argv 3]
 
+# The transcript is written here rather than by redirecting stdout: expect
+# buffers a redirected stdout, which makes a multi-hour run impossible to watch
+# and truncates the evidence if it is killed. log_file writes as it goes and
+# captures send_user output too, so the "FAILED:" line lands in the log.
 log_file -a $logfile
 set send_slow {1 .05}
 
@@ -27,8 +31,18 @@ set boot_timeout    900
 set prompt_timeout  600
 set install_timeout 14400
 
+# A booting kernel produces far more output than expect's default 2000-byte
+# match buffer holds. When it overflows expect discards the oldest half, and
+# a marker that arrived in that half is never matched -- the transcript shows
+# the text arriving while expect sits waiting for it.
+match_max 200000
+
 proc bail {code msg} {
+    # send_log as well as send_user: log_file records only the spawned
+    # process's I/O, so a send_user-only line never reaches the transcript
+    # that the suite greps for "FAILED:".
     send_user "\n\[install.expect\] FAILED: $msg\n"
+    send_log  "\n\[install.expect\] FAILED: $msg\n"
     exit $code
 }
 
@@ -49,6 +63,18 @@ proc serial_connect {} {
     spawn nc 127.0.0.1 $port
     set connected 1
 }
+# Sync on the shell prompt rather than on an echoed marker. Marker text was
+# demonstrably read by expect -- it shows up in the transcript -- but never
+# matched, while this prompt pattern matches reliably.
+proc wait_prompt {code msg} {
+    global spawn_id
+    expect {
+        -re {root@nixos:[^\r\n]*\]#} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { bail $code $msg }
+    }
+}
+
 proc reconnect_or_bail {} {
     global drops
     incr drops
@@ -63,41 +89,46 @@ serial_connect
 # The ISO autologins an unprivileged `nixos` user. Nudge it with a newline in
 # case we attached after the prompt was already printed.
 set timeout $boot_timeout
-send "\r"
+send -s "\r"
 expect {
-    -re {\[root@nixos.*\]#} { }
-    -re {\[nixos@nixos.*\]\$} {
-        send "sudo -i\r"
+    -re {root@nixos:[^\r\n]*\]#} { }
+    -re {nixos@nixos:[^\r\n]*\]\$} {
+        send -s "sudo -i\r"
         expect {
-            -re {\[root@nixos.*\]#} { }
-            eof     { reconnect_or_bail; send "\r"; exp_continue }
+            -re {root@nixos:[^\r\n]*\]#} { }
+            eof     { reconnect_or_bail; send -s "\r"; exp_continue }
             timeout { bail 11 "sudo -i did not produce a root shell" }
         }
     }
-    eof     { reconnect_or_bail; send "\r"; exp_continue }
+    eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 11 "no login prompt on the serial console after ${boot_timeout}s" }
 }
 
 # Quieten the kernel: log spam interleaved with the installer's prompts makes
 # every later pattern racy.
-send "dmesg -n 1\r"
-expect -re {[#$] $}
+send_log "\n\[step\] got root shell, quieting kernel\n"
+send -s "dmesg -n 1\r"
+wait_prompt 11 "shell did not return a prompt after dmesg"
+send_log "\n\[step\] shell responsive\n"
 
 # ---------------------------------------------------------------- stage the repo
 
 # By label, not /dev/sr1: with two CDs attached the numbering is not guaranteed.
 set timeout $prompt_timeout
-send "mkdir -p /root/repo && mount -o ro /dev/disk/by-label/NIXINST /mnt 2>/dev/null || mount -o ro -L NIXINST /mnt\r"
-expect -re {[#$] $}
-send "cp -r /mnt/. /root/repo/ && umount /mnt && chmod +x /root/repo/*.sh && echo STAGED-OK\r"
-expect {
-    "STAGED-OK" { }
-    timeout { bail 12 "could not stage the repo from the NIXINST CD" }
-}
+send_log "\n\[step\] mounting NIXINST\n"
+send -s "mount -o ro -L NIXINST /mnt\r"
+wait_prompt 12 "mounting the NIXINST CD did not return"
+send_log "\n\[step\] CD mounted\n"
+send -s "mkdir -p /root/repo && cp -r /mnt/. /root/repo/\r"
+wait_prompt 12 "copying the repo off the CD did not return"
+send -s "umount /mnt; chmod +x /root/repo/*.sh\r"
+wait_prompt 12 "chmod did not return"
+send_log "\n\[step\] repo staged\n"
 
 # ---------------------------------------------------------------- run it
 
-send "cd /root/repo && ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
+send_log "\n\[step\] launching install-me.sh\n"
+send -s "cd /root/repo && ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
 
 # The installer's prompts do not arrive in a fixed order across firmware modes
 # and pool states, so match on whichever comes next rather than assuming a
@@ -105,51 +136,52 @@ send "cd /root/repo && ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
 set disks_picked 0
 set timeout $install_timeout
 
+# NOTE: no comments inside this expect block. Tcl does not treat "#" as a
+# comment in a pattern list -- each such line would become a live pattern
+# ("#", "An", "pool", ...) and match stray output. Every branch is explained
+# here instead:
+#
+#   "so the disks can be examined"  a pool left imported by an earlier phase
+#   "number toggles, d when done"   select_disks; toggle 1..N then d. Guarded
+#                                   by disks_picked so the replacement-disk
+#                                   menu cannot re-trigger it
+#   "choose [3]: "                  ask DATA_CHOICE; 3 = skip the data pool
+#   "anything else aborts"          confirm_hard; matched on the uncoloured
+#                                   tail because DESTROY itself is bolded
+#   "Y/n"                           confirm; pool-looks-right and pre-install
+#   "FATAL"                         lib/common.sh die()
 expect {
-    # An imported pool from a previous scenario. Say yes to exporting it.
     "so the disks can be examined" {
-        send "y"; exp_continue
+        send -s "y"; exp_continue
     }
-
-    # select_disks: toggle 1..N, then d. Guarded by disks_picked so the
-    # replacement-disk menu in a later run cannot re-trigger this branch.
     "number toggles, d when done" {
         if {$disks_picked < $ndisks} {
             incr disks_picked
-            send "$disks_picked\r"
+            send -s "$disks_picked\r"
         } else {
-            send "d\r"
+            send -s "d\r"
         }
         exp_continue
     }
-
-    # ask DATA_CHOICE "choose" "3" -- 3 is "skip, root mirror only".
     -re {choose \[3\]: } {
-        send "3\r"; exp_continue
+        send -s "3\r"; exp_continue
     }
-
-    # confirm_hard. Matched on the uncoloured tail of the line.
     "anything else aborts" {
-        send "DESTROY\r"; exp_continue
+        send -s "DESTROY\r"; exp_continue
     }
-
-    # confirm "Does the pool above look right?" and the pre-nixos-install one.
     "Y/n" {
-        send "y"; exp_continue
+        send -s "y"; exp_continue
     }
-
-    # lib/common.sh die()
     "FATAL" {
         bail 13 "installer aborted with a FATAL"
     }
-
     "INSTALLER-EXIT=0" {
-        send_user "\n\[install.expect\] installer finished cleanly\n"
+        send_log "\n\[step\] installer finished cleanly\n"
     }
     -re {INSTALLER-EXIT=([1-9][0-9]*)} {
         bail 14 "install-me.sh exited non-zero"
     }
-
+    eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 15 "installer timed out after ${install_timeout}s" }
 }
 
@@ -157,7 +189,7 @@ expect {
 
 # The pools are already exported by the installer; this is just a clean stop so
 # the next scenario boots from a quiesced disk.
-send "poweroff\r"
+send -s "poweroff\r"
 expect {
     "reboot: Power down" { }
     "Power down"         { }

@@ -23,14 +23,27 @@ and updates this file.
 | VM lifecycle (start, confirmed stop, destroy by prefix) | verified working |
 | Repo ISO built with `hdiutil` | verified working |
 | Installer ISO repacked for serial (`xorriso`) | verified working |
-| Guest reaches a serial console the harness can drive | verified — a UEFI VM booted from the repacked ISO to a login prompt on the TCP serial port |
+| Guest reaches a serial console the harness can drive | verified |
+| Unattended drive-through to the installer | verified — see the step trace below |
 | `install` → `boot` → `degraded` → `replace` end to end | **not yet run to completion** |
 
-The last verified step is the one that matters most for trusting the rest: a
-three-disk UEFI VM booted the repacked ISO and presented a login prompt on
-`127.0.0.1:4417`, which is the console `install.expect` drives. Everything from
-that point on is the installer's own prompt sequence, which is exercised but
-not yet observed to completion.
+The harness has been driven, unattended, all the way from a cold VM to the
+installer running. This step trace is from an actual `uefi install` run:
+
+```
+[step] got root shell, quieting kernel
+[step] shell responsive
+[step] mounting NIXINST
+[step] CD mounted
+[step] repo staged
+[step] launching install-me.sh
+```
+
+That covers: UEFI firmware → repacked ISO → GRUB → kernel with a serial
+console → autologin as `nixos` → `sudo -i` → mounting the repo CD by label →
+staging the repo → launching `install-me.sh`. What has *not* been observed is
+everything after that: the disk menu being answered, the pool being built, and
+`nixos-install` completing.
 
 ## What does not work in UTM, and why
 
@@ -100,8 +113,57 @@ serves one client, and the probe consumes it; the connection that matters then
 gets an immediate EOF. `vm_serial_ready` checks for a LISTEN socket with `lsof`
 instead and never connects.
 
-(A fourth trap was mine, not UTM's: `spawn` inside a Tcl proc sets a *local*
-`spawn_id`, so the caller ends up with no connection. Spawn at top level.)
+**`utmctl stop` can wedge.** A stuck VM answers `stop --force` with
+`OSStatus error -1712` (AppleEvent timed out) and stays `started` forever.
+`vm_kill` therefore falls back to killing the QEMU process by bundle path.
+
+## Four expect traps, all of which look like a hung guest
+
+These cost more time than anything on the UTM side, so they are worth naming.
+
+**`spawn` inside a Tcl proc sets a *local* `spawn_id`** unless the proc
+declares it global — the caller is left with no connection at all.
+
+**`close` with nothing spawned closes expect's own stdout.** The first
+`serial_connect` call did this, which silently destroyed the script's output.
+Guard it with a `connected` flag.
+
+**`log_file` records only the spawned process's I/O, not `send_user`.** Every
+`FAILED:` line was going to stdout and never reaching the transcript the suite
+greps — so a failed phase reported "see the log" and the log said nothing.
+`bail` now writes with both `send_user` and `send_log`.
+
+**Comments inside an `expect {}` block are patterns, not comments.** Tcl does
+not treat `#` specially in a pattern list, so every `# ...` line was a live
+pattern matching stray output. Both blocks were rewritten with the commentary
+moved above them.
+
+## The one that actually blocked the run
+
+Synchronising on an echoed marker does not work on this console. The driver
+would send `echo QUIET-OK`, the transcript would show `QUIET-OK` arriving —
+proving expect had *read* it — and the matching `expect` would sit there until
+it timed out. Raising `match_max`, throttling the send, and reconnecting all
+failed to change it.
+
+Synchronising on the shell prompt regex works, and it is what the driver does
+now:
+
+```tcl
+proc wait_prompt {code msg} {
+    expect {
+        -re {root@nixos:[^\r\n]*\]#} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { bail $code $msg }
+    }
+}
+```
+
+Note the prompt pattern itself: the real prompt is
+`[\033]0;root@nixos: ~\007root@nixos:~]#`, so an intuitive `\[root@nixos` never
+matches — the `[` is followed by an escape sequence, not by the username. For
+the same reason a `{[#$] $}` prompt wait never fires: the line ends with
+`$ \033[0m `, not with `$ `.
 
 ## Finishing the run
 
