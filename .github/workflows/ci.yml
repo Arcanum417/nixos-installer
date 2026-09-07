@@ -14,7 +14,7 @@ jobs:
     name: shellcheck + nix parse
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - uses: cachix/install-nix-action@v27
@@ -26,7 +26,7 @@ jobs:
     name: lib/common.sh unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # jq is preinstalled on GitHub runners, but be explicit.
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - run: bash tests/lib-unit.sh
@@ -35,7 +35,7 @@ jobs:
     name: NixOS eval matrix (uefi/bios x 2/3 disks x data/no-data)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-25.05
@@ -46,7 +46,7 @@ jobs:
     name: partitioning + ZFS mirror on loop devices
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install disk tooling
         run: |
           sudo apt-get update -qq

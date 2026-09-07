@@ -1,5 +1,7 @@
 # nixos-installer
 
+[![ci](https://github.com/Arcanum417/nixos-installer/actions/workflows/ci.yml/badge.svg)](https://github.com/Arcanum417/nixos-installer/actions/workflows/ci.yml)
+
 Bare-metal NixOS installer for machines that boot off an **N-way ZFS root
 mirror**, built so a dead server can be rebuilt from three things:
 
@@ -265,7 +267,9 @@ rebuild — never hand-edited Nix.
 bash tests/run-all.sh          # runs whatever this machine can; skips the rest
 ```
 
-Four suites, all run in CI on every push (`.github/workflows/ci.yml`):
+Four suites, **334 checks**, all run in CI on every push
+(`.github/workflows/ci.yml`). The GitHub runner can load the ZFS module, so the
+mirror lifecycle is exercised for real there, not skipped:
 
 | Suite | What it covers | Needs |
 |---|---|---|
