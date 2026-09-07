@@ -27,6 +27,17 @@ else
     printf '\n\033[33m>> disk-integration skipped (needs root)\033[0m\n'
 fi
 
+# tests/vm-boot.sh is macOS + UTM only and takes hours: the guest is x86_64 on
+# what is almost certainly an arm64 host, so QEMU runs in TCG emulation. It is
+# a deliberate release gate, not part of a routine run, so it is opt-in even on
+# a machine that could run it. See tests/vm/README.md.
+if [[ ${VM_TESTS-0} == 1 ]]; then
+    run vm-boot      bash "$HERE/vm-boot.sh"
+else
+    SKIPPED=$((SKIPPED+1))
+    printf '\n\033[33m>> vm-boot skipped (set VM_TESTS=1; needs macOS + UTM, takes hours)\033[0m\n'
+fi
+
 printf '\n\033[1m==========================================\033[0m\n'
 printf 'suites: %d passed, %d failed, %d skipped\n' "$RAN" "$FAILED" "$SKIPPED"
 [[ $FAILED -eq 0 ]]

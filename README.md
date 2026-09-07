@@ -267,7 +267,7 @@ rebuild — never hand-edited Nix.
 bash tests/run-all.sh          # runs whatever this machine can; skips the rest
 ```
 
-Four suites, **334 checks**, all run in CI on every push
+Four suites, **334 checks**, run in CI on every push
 (`.github/workflows/ci.yml`). The GitHub runner can load the ZFS module, so the
 mirror lifecycle is exercised for real there, not skipped:
 
@@ -281,10 +281,27 @@ mirror lifecycle is exercised for real there, not skipped:
 The ZFS section of `disk-integration.sh` reports itself as **skipped**, not passed,
 when no zfs kernel module is available.
 
-What no suite covers, because it cannot: actually booting. GRUB landing in the
-right place, firmware finding `\EFI\BOOT\BOOTX64.EFI` on a surviving disk, and
-the machine coming up with a disk pulled all need a VM per firmware mode. Do
-that once on new hardware.
+### Booting it: `tests/vm-boot.sh`
+
+A fifth suite covers the one thing the four above cannot — actually starting a
+machine. It runs on **macOS with UTM** and so is not in CI (the runners are
+Linux). One VM per firmware mode is installed, then progressively broken:
+
+| Phase | What it proves |
+|---|---|
+| `install` | `install-me.sh` runs unattended to completion on a 3-way mirror; hostId set before any pool exists; the pool really is `mirror-0`; pools exported for a clean first import |
+| `boot` | the installed system boots off the mirror to a shell — hostname and hostId intact, pool `ONLINE`, `/` on the ZFS dataset, `disk-layout.json` matching the firmware, and GRUB at `EFI/BOOT/BOOTX64.EFI` |
+| `degraded` | with the **first** disk pulled — the one whose ESP is `/boot` — it still boots: pool `DEGRADED`, `/` mounted, `nofail` keeping the missing `/boot` from blocking startup, `zfs-health-check` noticing |
+| `replace` | `replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, reinstalls the bootloader, and the pool returns to healthy |
+
+```sh
+bash tests/vm-boot.sh          # both firmware modes; takes hours
+```
+
+The guest is x86_64 because `BOOTX64.EFI` and the `EF02` BIOS boot partition
+are x86-only — an aarch64 guest is far faster but cannot test the BIOS path at
+all. On an arm64 Mac that means TCG emulation, so this is a release gate, not a
+routine run. Setup, knobs and troubleshooting: **[`tests/vm/README.md`](tests/vm/README.md)**.
 
 ## Known limits
 
@@ -298,6 +315,11 @@ that once on new hardware.
   (`boot.zfs.requestEncryptionCredentials` prompts in the initrd).
 - **`ALLOW_MIXED_SIZE=1` is not tested as thoroughly** as the identical-disk
   path. Prefer identical disks.
-- Nothing here is verified on real hardware from this repo alone — test a new
-  machine type in a VM with two virtual disks, once per firmware mode, before
+- **The data pool is not covered by the VM suite.** `tests/vm-boot.sh` drives
+  `install-me.sh` with the "skip" option, so creating and importing an
+  encrypted `zdata` is still only evaluated, never booted.
+- Nothing here is verified on **real hardware** from this repo alone.
+  `tests/vm-boot.sh` boots an emulated machine per firmware mode, which catches
+  bootloader and pool-import mistakes but not firmware quirks, controller
+  behaviour, or anything timing-dependent. Test a new machine type before
   trusting it with a rebuild you need.

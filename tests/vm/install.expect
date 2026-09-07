@@ -1,0 +1,168 @@
+#!/usr/bin/env expect
+#
+# Drives a full install-me.sh run over the guest's serial console.
+#
+#   install.expect PORT NDISKS FIRMWARE LOGFILE
+#
+# Exits 0 only when the installer prints its own completion line. Any other
+# outcome (a FATAL from lib/common.sh, a shell that never appears, a timeout)
+# is a failure with a distinct exit code so the suite can say which stage died.
+#
+# Pattern choice matters here: lib/common.sh colours its prompts, so
+# "Type \033[1mDESTROY\033[0m to continue" cannot be matched on the word
+# DESTROY. Every pattern below is a run of plain text with no escape sequence
+# inside it.
+
+set port     [lindex $argv 0]
+set ndisks   [lindex $argv 1]
+set firmware [lindex $argv 2]
+set logfile  [lindex $argv 3]
+
+log_file -a $logfile
+set send_slow {1 .05}
+
+# TCG emulation is slow and nixos-install downloads a closure, so these are
+# deliberately generous. A hung guest costs one timeout, not a wrong answer.
+set boot_timeout    900
+set prompt_timeout  600
+set install_timeout 14400
+
+proc bail {code msg} {
+    send_user "\n\[install.expect\] FAILED: $msg\n"
+    exit $code
+}
+
+# UTM drops the serial TCP client when the guest reinitialises the UART, which
+# GRUB does on its way to the kernel. That is one expected disconnect per boot,
+# not an error, so every wait below reconnects rather than failing.
+#
+# `spawn` must not live inside a proc that does not declare spawn_id global:
+# it would set a local one and the caller would be left with no connection.
+set drops 0
+set connected 0
+proc serial_connect {} {
+    global spawn_id port connected
+    # Only close a connection that exists. `close` with nothing spawned
+    # targets expect's own stdout and silently kills this script's output.
+    if {$connected} { catch {close}; catch {wait} }
+    sleep 2
+    spawn nc 127.0.0.1 $port
+    set connected 1
+}
+proc reconnect_or_bail {} {
+    global drops
+    incr drops
+    if {$drops > 40} { bail 16 "serial connection kept dropping ($drops times)" }
+    serial_connect
+}
+
+serial_connect
+
+# ---------------------------------------------------------------- get a root shell
+
+# The ISO autologins an unprivileged `nixos` user. Nudge it with a newline in
+# case we attached after the prompt was already printed.
+set timeout $boot_timeout
+send "\r"
+expect {
+    -re {\[root@nixos.*\]#} { }
+    -re {\[nixos@nixos.*\]\$} {
+        send "sudo -i\r"
+        expect {
+            -re {\[root@nixos.*\]#} { }
+            eof     { reconnect_or_bail; send "\r"; exp_continue }
+            timeout { bail 11 "sudo -i did not produce a root shell" }
+        }
+    }
+    eof     { reconnect_or_bail; send "\r"; exp_continue }
+    timeout { bail 11 "no login prompt on the serial console after ${boot_timeout}s" }
+}
+
+# Quieten the kernel: log spam interleaved with the installer's prompts makes
+# every later pattern racy.
+send "dmesg -n 1\r"
+expect -re {[#$] $}
+
+# ---------------------------------------------------------------- stage the repo
+
+# By label, not /dev/sr1: with two CDs attached the numbering is not guaranteed.
+set timeout $prompt_timeout
+send "mkdir -p /root/repo && mount -o ro /dev/disk/by-label/NIXINST /mnt 2>/dev/null || mount -o ro -L NIXINST /mnt\r"
+expect -re {[#$] $}
+send "cp -r /mnt/. /root/repo/ && umount /mnt && chmod +x /root/repo/*.sh && echo STAGED-OK\r"
+expect {
+    "STAGED-OK" { }
+    timeout { bail 12 "could not stage the repo from the NIXINST CD" }
+}
+
+# ---------------------------------------------------------------- run it
+
+send "cd /root/repo && ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
+
+# The installer's prompts do not arrive in a fixed order across firmware modes
+# and pool states, so match on whichever comes next rather than assuming a
+# script. Each branch re-enters the loop with exp_continue.
+set disks_picked 0
+set timeout $install_timeout
+
+expect {
+    # An imported pool from a previous scenario. Say yes to exporting it.
+    "so the disks can be examined" {
+        send "y"; exp_continue
+    }
+
+    # select_disks: toggle 1..N, then d. Guarded by disks_picked so the
+    # replacement-disk menu in a later run cannot re-trigger this branch.
+    "number toggles, d when done" {
+        if {$disks_picked < $ndisks} {
+            incr disks_picked
+            send "$disks_picked\r"
+        } else {
+            send "d\r"
+        }
+        exp_continue
+    }
+
+    # ask DATA_CHOICE "choose" "3" -- 3 is "skip, root mirror only".
+    -re {choose \[3\]: } {
+        send "3\r"; exp_continue
+    }
+
+    # confirm_hard. Matched on the uncoloured tail of the line.
+    "anything else aborts" {
+        send "DESTROY\r"; exp_continue
+    }
+
+    # confirm "Does the pool above look right?" and the pre-nixos-install one.
+    "Y/n" {
+        send "y"; exp_continue
+    }
+
+    # lib/common.sh die()
+    "FATAL" {
+        bail 13 "installer aborted with a FATAL"
+    }
+
+    "INSTALLER-EXIT=0" {
+        send_user "\n\[install.expect\] installer finished cleanly\n"
+    }
+    -re {INSTALLER-EXIT=([1-9][0-9]*)} {
+        bail 14 "install-me.sh exited non-zero"
+    }
+
+    timeout { bail 15 "installer timed out after ${install_timeout}s" }
+}
+
+# ---------------------------------------------------------------- power off
+
+# The pools are already exported by the installer; this is just a clean stop so
+# the next scenario boots from a quiesced disk.
+send "poweroff\r"
+expect {
+    "reboot: Power down" { }
+    "Power down"         { }
+    eof                  { }
+    timeout              { }
+}
+
+exit 0

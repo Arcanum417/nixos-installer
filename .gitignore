@@ -1,0 +1,3 @@
+# Serial console transcripts from tests/vm-boot.sh. Useful while debugging a
+# failed run, but they are large, machine-specific, and regenerated every run.
+tests/vm/logs/

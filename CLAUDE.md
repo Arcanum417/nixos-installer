@@ -110,6 +110,14 @@ data-pool matrix, plus `system.build.toplevel` and building the health-check
 derivation). A suite exits **77** when its environment is missing, which
 `run-all.sh` reports as skipped. All four run in CI.
 
+`tests/vm-boot.sh` is the fifth suite and does **not** run in CI — it needs
+macOS and UTM, and CI is Linux. It boots the thing: a real install onto a real
+mirror, then the same VM booted again with a disk pulled and again after a
+replacement is resilvered, across both firmware modes. It is opt-in
+(`VM_TESTS=1 bash tests/run-all.sh`, or run it directly) because the guest is
+x86_64 on an arm64 host, so QEMU is emulating and a full run takes hours. See
+`tests/vm/README.md`.
+
 Nothing is installed by default here, but everything can be fetched — GitHub
 tarballs are blocked (the session is scoped to this repo) while
 `releases.nixos.org`, `channels.nixos.org` and `cache.nixos.org` are reachable:
@@ -133,9 +141,17 @@ defects: the ESP `grep -v` aborting under `pipefail` on an empty filesystem,
 and `select_disks` renumbering its menu between picks (which, in a script that
 runs `sgdisk --zap-all` on your choice, wipes the wrong disk).
 
-What the tests cannot reach: booting. GRUB landing correctly, firmware finding
-the removable path on a surviving disk, and the machine coming up degraded need
-a VM per firmware mode. Say so plainly instead of implying end-to-end coverage.
+Booting used to be out of reach; `tests/vm-boot.sh` now covers it, one VM per
+firmware mode: GRUB landing correctly, the removable path being found on a
+surviving disk after the first is pulled, the machine coming up degraded with
+`/boot` missing, and a replacement disk resilvering back to healthy.
+
+What remains out of reach: real hardware. The guest is emulated, so firmware
+quirks, NVMe/SATA controller behaviour, and anything timing-dependent on a
+physical machine are still untested. The data pool is also not covered by the
+VM suite — `install-me.sh` is driven with the "skip" option, so encrypted-pool
+creation and import are still evaluation-only. Say so plainly instead of
+implying end-to-end coverage.
 
 ## Repo etiquette
 
