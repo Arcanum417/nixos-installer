@@ -250,6 +250,7 @@ deleting files.
 | `zfs-health.nix` | scrub, ZED, degraded-mirror and stale-boot alerting |
 | `unique.nix` | template for the per-machine file |
 | `other/node_exporter/` | Prometheus textfile collectors for SMART/NVMe |
+| `tests/` | the test suite (see below) |
 | `AUDIT.md` | review of the previous version and why it changed |
 
 `disk-layout.json` is the whole machine-specific disk story, and it is read by
@@ -257,6 +258,29 @@ Nix with `builtins.fromJSON`. Swapping a disk is a one-field edit plus a
 rebuild — never hand-edited Nix.
 
 ---
+
+## Tests
+
+```sh
+bash tests/run-all.sh          # runs whatever this machine can; skips the rest
+```
+
+Four suites, all run in CI on every push (`.github/workflows/ci.yml`):
+
+| Suite | What it covers | Needs |
+|---|---|---|
+| `tests/lint.sh` | `bash -n` and shellcheck on every script, `nix-instantiate --parse` on every Nix file, plus repo invariants: the on-machine scripts must not need `nix-shell`, and no disk IDs may appear in tracked Nix | shellcheck, nix |
+| `tests/lib-unit.sh` | `lib/common.sh` in isolation: `disk-layout.json` round trip, `--drop` not renumbering survivors, `nix_attr` parsing, hostId byte order and validation, `by_id_path` preference order (faked udev), and `select_disks` — minimum of 2, stable numbering, toggling, live-medium and no-by-id exclusion | jq |
+| `tests/disk-integration.sh` | the real partitioning code against **loop devices**: UEFI and BIOS layouts, partition types and sizes, all ZFS partitions byte-identical, the 1 GiB end slack, **every GPT disk and partition GUID distinct**, the ESP really being FAT32, and `--replicate` + `--randomize-guids` copying the layout but not the identity. Then creates a 3-way ZFS mirror, degrades it, replaces the member and waits for the resilver | root, loop devices, gdisk, dosfstools, a zfs kernel module |
+| `tests/nix-eval.sh` | the whole config evaluated through `nixos/lib/eval-config.nix` across **firmware × mirror width × data pool** (8 combinations), asserting no failed assertions and checking `mirroredBoots`, `fileSystems`, `efiInstallAsRemovable`, `devNodes`, `extraPools` and the `unique.nix` wiring. Instantiates `system.build.toplevel` for both firmwares and builds the health-check derivation (which is what runs shellcheck on it) | nix, nixpkgs |
+
+The ZFS section of `disk-integration.sh` reports itself as **skipped**, not passed,
+when no zfs kernel module is available.
+
+What no suite covers, because it cannot: actually booting. GRUB landing in the
+right place, firmware finding `\EFI\BOOT\BOOTX64.EFI` on a surviving disk, and
+the machine coming up with a disk pulled all need a VM per firmware mode. Do
+that once on new hardware.
 
 ## Known limits
 

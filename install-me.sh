@@ -1,5 +1,6 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i bash -p bash gptfdisk util-linux dosfstools e2fsprogs coreutils gawk jq
+# shellcheck shell=bash
 
 # Full bare-metal NixOS install onto an N-way ZFS root mirror.
 #

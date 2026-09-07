@@ -76,8 +76,7 @@ set_hostid () {
         zgenhostid -f "$id"
     else
         # /etc/hostid is a 4-byte integer in host byte order (little-endian here).
-        printf "$(printf '\\x%s\\x%s\\x%s\\x%s' "${id:6:2}" "${id:4:2}" "${id:2:2}" "${id:0:2}")" \
-            > /etc/hostid
+        printf '%b' "\\x${id:6:2}\\x${id:4:2}\\x${id:2:2}\\x${id:0:2}" > /etc/hostid
     fi
     local got; got=$(hostid)
     [[ ${got,,} == "$id" ]] || die "failed to set hostid: wanted $id, hostid(1) reports $got"
@@ -164,40 +163,65 @@ hr_size () { # bytes -> human
 }
 
 # select_disks MIN "purpose" [excluded by-id ...]  -> sets SELECTED[]
+#
+# The candidate list is built once and the numbering never changes, even as
+# disks are selected. An earlier version re-rendered the menu with the chosen
+# disks removed, so the numbers shifted between picks - in a script that runs
+# `sgdisk --zap-all` on what you chose, that is how you erase the wrong disk.
+# A number toggles; already-selected disks are marked with *.
 select_disks () {
     local min=$1 purpose=$2; shift 2
     local -a excluded=("$@")
     SELECTED=()
     local live; live=$(live_medium_disks)
 
+    local -a cand=()
+    local i s skip
+    for i in "${!DISK_KNAME[@]}"; do
+        [[ -n ${DISK_BYID[$i]} ]] || continue           # no stable by-id: unusable
+        skip=""
+        grep -qx "${DISK_KNAME[$i]}" <<<"$live" && skip=1
+        for s in ${excluded[@]+"${excluded[@]}"}; do
+            [[ $s == "${DISK_BYID[$i]}" ]] && skip=1
+        done
+        [[ -z $skip ]] || continue
+        cand+=("$i")
+    done
+    [[ ${#cand[@]} -ge $min ]] \
+        || die "only ${#cand[@]} usable disk(s) available for $purpose, need at least $min"
+
+    local n reply mark found
+    local -a keep=()
     while :; do
         echo
-        say "Disks available for $purpose (selected: ${#SELECTED[@]}, minimum $min)"
-        local -a idx=()
-        local i
-        for i in "${!DISK_KNAME[@]}"; do
-            local byid=${DISK_BYID[$i]}
-            [[ -n $byid ]] || continue
-            local skip=""
-            local s
-            for s in ${SELECTED[@]+"${SELECTED[@]}"}; do [[ $s == "$byid" ]] && skip=1; done
-            for s in ${excluded[@]+"${excluded[@]}"}; do [[ $s == "$byid" ]] && skip=1; done
-            grep -qx "${DISK_KNAME[$i]}" <<<"$live" && skip=1
-            [[ -z $skip ]] || continue
-            idx+=("$i")
-            printf "   %2d) %s\n" "${#idx[@]}" "${DISK_LABEL[$i]}"
+        say "Disks available for $purpose  (selected ${#SELECTED[@]}, minimum $min)"
+        for n in "${!cand[@]}"; do
+            i=${cand[$n]}; mark=" "
+            for s in ${SELECTED[@]+"${SELECTED[@]}"}; do
+                [[ $s == "${DISK_BYID[$i]}" ]] && mark="*"
+            done
+            printf "   %s %2d) %s\n" "$mark" "$((n+1))" "${DISK_LABEL[$i]}"
         done
-        [[ ${#idx[@]} -gt 0 ]] || { [[ ${#SELECTED[@]} -ge $min ]] || die "not enough usable disks"; break; }
-        if [[ ${#SELECTED[@]} -ge $min ]]; then
-            printf "    d) done - use the %d disk(s) selected so far\n" "${#SELECTED[@]}"
-        fi
-        local reply=""
-        read -r -p "  choose: " reply || true
-        if [[ $reply == d || $reply == D ]] && [[ ${#SELECTED[@]} -ge $min ]]; then break; fi
-        if [[ $reply =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#idx[@]} )); then
-            local pick=${idx[$((reply-1))]}
-            SELECTED+=("${DISK_BYID[$pick]}")
-            ok "added ${DISK_KNAME[$pick]}  ->  ${DISK_BYID[$pick]}"
+        [[ ${#SELECTED[@]} -ge $min ]] \
+            && printf "        d) done - use the %d disk(s) marked *\n" "${#SELECTED[@]}"
+
+        reply=""
+        read -r -p "  number toggles, d when done: " reply || true
+
+        if [[ $reply == [dD] ]] && [[ ${#SELECTED[@]} -ge $min ]]; then break; fi
+        if [[ $reply =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#cand[@]} )); then
+            i=${cand[$((reply-1))]}
+            keep=(); found=""
+            for s in ${SELECTED[@]+"${SELECTED[@]}"}; do
+                if [[ $s == "${DISK_BYID[$i]}" ]]; then found=1; else keep+=("$s"); fi
+            done
+            if [[ -n $found ]]; then
+                SELECTED=(${keep[@]+"${keep[@]}"})
+                info "removed ${DISK_KNAME[$i]}"
+            else
+                SELECTED+=("${DISK_BYID[$i]}")
+                ok "added ${DISK_KNAME[$i]}  ->  ${DISK_BYID[$i]}"
+            fi
         else
             warn "invalid selection"
         fi
@@ -245,7 +269,7 @@ settle () {
 # straight after partitioning and hoped; on a fast machine the by-id symlinks
 # are not there yet.
 wait_for_nodes () {
-    local tries=60 missing p
+    local tries=${WAIT_FOR_NODES_TRIES:-60} missing p
     while (( tries-- > 0 )); do
         missing=""
         for p in "$@"; do [[ -b $p ]] || missing="$p"; done
@@ -345,14 +369,14 @@ next_free_mount_point () { # next_free_mount_point  (uses BOOT_MPS[])
 }
 
 # Distinct labels so /dev/disk/by-label/ does not collide between mirror halves.
-mkfs_boot () { # mkfs_boot uefi|bios device index
-    local mode=$1 dev=$2 idx=$3
+mkfs_boot () { # mkfs_boot uefi|bios device label_index
+    local mode=$1 dev=$2 n=$3
     if [[ $mode == uefi ]]; then
         # -F 32 explicitly: a 512 MiB ESP lands exactly on dosfstools'
         # FAT16/FAT32 auto-select boundary, and UEFI wants FAT32.
-        mkfs.vfat -F 32 -n "ESP$idx" "$dev" >/dev/null
+        mkfs.vfat -F 32 -n "ESP$n" "$dev" >/dev/null
     else
-        mkfs.ext4 -q -F -L "boot$idx" "$dev"
+        mkfs.ext4 -q -F -L "boot$n" "$dev"
     fi
 }
 

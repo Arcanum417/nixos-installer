@@ -75,8 +75,11 @@ if [[ $MODE != add ]]; then
         [[ $(slot_state "$i") == ONLINE ]] || { DEFAULT=$((i+1)); break; }
     done
     [[ -n $DEFAULT ]] || warn "every member reports ONLINE - are you sure a disk failed?"
+    PICK=""
     ask PICK "which member to $MODE (number)" "$DEFAULT"
-    [[ $PICK =~ ^[0-9]+$ ]] && (( PICK >= 1 && PICK <= ${#BOOT_DISKS[@]} )) || die "invalid selection"
+    if [[ ! $PICK =~ ^[0-9]+$ ]] || (( PICK < 1 || PICK > ${#BOOT_DISKS[@]} )); then
+        die "invalid selection: $PICK"
+    fi
     SLOT=$((PICK-1))
     info "selected: ${BOOT_DISKS[$SLOT]}  (${BOOT_MPS[$SLOT]})"
 fi
@@ -188,7 +191,7 @@ else
     fi
     zpool replace "$ROOT_POOL" "$OLDDEV" "$NEWDEV"
     ok "resilver started"
-    BOOT_DISKS[$SLOT]=$NEW
+    BOOT_DISKS[SLOT]=$NEW
 fi
 
 # ------------------------------------------------------ boot filesystem -----

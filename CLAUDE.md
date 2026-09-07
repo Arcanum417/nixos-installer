@@ -98,43 +98,44 @@ There is deliberately **no** `configuration-bios.nix`, `finish-me.sh`, or
 
 ## Validating changes
 
-No nix toolchain is installed by default, but a standalone one can be fetched
-and the whole config genuinely evaluated — do this rather than eyeballing Nix:
+**Run the suite. Do not eyeball Nix.**
 
 ```sh
-# shell syntax
-bash -n install-me.sh replace-boot-disk.sh add-data-pool.sh lib/common.sh
+bash tests/run-all.sh
+```
 
-# standalone nix (releases.nixos.org and channels.nixos.org are reachable;
-# github.com tarballs are NOT - the session is scoped to this repo)
+Suites are `tests/lint.sh`, `tests/lib-unit.sh`, `tests/disk-integration.sh`
+(root + loop devices) and `tests/nix-eval.sh` (the 8-cell firmware × width ×
+data-pool matrix, plus `system.build.toplevel` and building the health-check
+derivation). A suite exits **77** when its environment is missing, which
+`run-all.sh` reports as skipped. All four run in CI.
+
+Nothing is installed by default here, but everything can be fetched — GitHub
+tarballs are blocked (the session is scoped to this repo) while
+`releases.nixos.org`, `channels.nixos.org` and `cache.nixos.org` are reachable:
+
+```sh
 curl -sSL -o nix.tar.xz https://releases.nixos.org/nix/nix-2.24.10/nix-2.24.10-x86_64-linux.tar.xz
 tar xf nix.tar.xz && mkdir -p /nix && cp -a nix-*/store /nix/store
 export PATH=/nix/store/*-nix-2.24.10/bin:$PATH
+mkdir -p /tmp/nixconf && printf 'build-users-group =\nsandbox = false\n' > /tmp/nixconf/nix.conf
+export NIX_CONF_DIR=/tmp/nixconf
 
 curl -sSL -o nixexprs.tar.xz https://channels.nixos.org/nixos-25.05/nixexprs.tar.xz
-tar xf nixexprs.tar.xz
+tar xf nixexprs.tar.xz && export NIXPKGS=$PWD/nixos-25.05.*
+
+# shellcheck, sgdisk, mkfs.vfat for the lint and disk suites
+nix-build --no-out-link "$NIXPKGS" -A shellcheck -A gptfdisk -A dosfstools -A util-linux
 ```
 
-Then build a scratch `/etc/nixos` (a `hardware-configuration.nix` stub with
-`nixpkgs.hostPlatform`, a real `unique.nix`, and a `disk-layout.json` produced by
-sourcing `lib/common.sh` and calling `write_disk_layout_json`) and evaluate it
-through `nixos/lib/eval-config.nix`. Check **both** `bootMode` values:
+When adding behaviour, add a check. The suite has already caught two real
+defects: the ESP `grep -v` aborting under `pipefail` on an empty filesystem,
+and `select_disks` renumbering its menu between picks (which, in a script that
+runs `sgdisk --zap-all` on your choice, wipes the wrong disk).
 
-```sh
-nix-instantiate --eval --strict --json -E \
-  'let c = (import ./eval.nix { dir = ./.; }); in
-   { fs = builtins.attrNames c.fileSystems;
-     mirrors = c.boot.loader.grub.mirroredBoots;
-     assertions = map (a: a.message) (builtins.filter (a: !a.assertion) c.assertions); }'
-
-nix-instantiate -E 'let c = (import ./eval.nix { dir = ./.; }); in c.system.build.toplevel'
-nix-build --no-out-link -E '...zfs-health-check...'   # runs shellcheck
-```
-
-What cannot be checked here: anything that touches real disks. Partitioning,
-`zpool` behaviour, GRUB installation and actually booting need a VM with two or
-three virtual disks, tested separately under UEFI and BIOS firmware. Say so
-explicitly rather than implying a change is verified end to end.
+What the tests cannot reach: booting. GRUB landing correctly, firmware finding
+the removable path on a surviving disk, and the machine coming up degraded need
+a VM per firmware mode. Say so plainly instead of implying end-to-end coverage.
 
 ## Repo etiquette
 

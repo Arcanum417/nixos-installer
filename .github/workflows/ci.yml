@@ -1,0 +1,72 @@
+name: ci
+
+"on":
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck + nix parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-25.05
+      - run: bash tests/lint.sh
+
+  unit:
+    name: lib/common.sh unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # jq is preinstalled on GitHub runners, but be explicit.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - run: bash tests/lib-unit.sh
+
+  nix-eval:
+    name: NixOS eval matrix (uefi/bios x 2/3 disks x data/no-data)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-25.05
+      - name: Evaluate every supported layout
+        run: bash tests/nix-eval.sh
+
+  disks:
+    name: partitioning + ZFS mirror on loop devices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install disk tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdisk dosfstools e2fsprogs util-linux zfsutils-linux
+      - name: Load the ZFS module
+        # If the runner image cannot provide zfs.ko the mirror assertions report
+        # themselves as skipped rather than silently passing; the partitioning,
+        # GUID-uniqueness and FAT32 assertions still run.
+        run: sudo modprobe zfs || echo "::warning::zfs module unavailable; mirror assertions will be skipped"
+      - name: Run disk integration tests
+        # sudo (not sudo -E) so secure_path puts sgdisk/partx from /usr/sbin in
+        # PATH. Exit 77 means the environment could not provide loop devices or
+        # the tooling: warn rather than fail, so a runner-image change does not
+        # look like a code regression.
+        run: |
+          set +e
+          sudo bash tests/disk-integration.sh
+          rc=$?
+          if [ "$rc" -eq 77 ]; then
+            echo "::warning::disk integration tests skipped (environment lacks loop devices or tooling)"
+            exit 0
+          fi
+          exit "$rc"
