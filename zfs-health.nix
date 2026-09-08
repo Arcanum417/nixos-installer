@@ -43,8 +43,17 @@ let
         fi
         # grep -v returns 1 when it filters everything out (an ESP that is
         # still empty right after a disk swap); pipefail would abort on that.
+        #
+        # memtest.bin is excluded for the same reason as grub.cfg: it does not
+        # arrive on every mount. It comes from boot.loader.grub.extraFiles, and
+        # a freshly installed machine has it on /boot only -- confirmed by the
+        # VM suite, where it was the *sole* difference between /boot and the
+        # fallbacks. GRUB does not need it to boot the system, so counting it
+        # made every healthy machine report "stale bootloader copy" on a
+        # 15-minute timer. A check that cries wolf on a good machine is worse
+        # than no check, because the one time it matters it gets ignored.
         sum=$(find "$mp" -type f -printf '%P\n' \
-              | { grep -vE '^grub/(grub\.cfg|grubenv|state)$' || true; } \
+              | { grep -vE '^(grub/(grub\.cfg|grubenv|state)|memtest\.bin)$' || true; } \
               | sort | sha256sum | cut -d' ' -f1)
         if [ -z "$ref" ]; then
           ref=$sum; refmp=$mp

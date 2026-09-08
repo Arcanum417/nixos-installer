@@ -182,6 +182,17 @@ if ( cd "$WORK" && nix-build --no-out-link -E \
     script=$(cat "$WORK/built")/bin/zfs-health-check
     contains "checks both boot mounts" "$(cat "$script")" "for mp in /boot /boot-fallback-1"
     contains "guards grep -v against pipefail" "$(cat "$script")" "|| true; }"
+
+    # memtest.bin comes from boot.loader.grub.extraFiles and lands on /boot
+    # only, so counting it made a freshly installed machine report a stale
+    # bootloader copy every 15 minutes. The VM suite found this; the guard
+    # against it belongs here, where it costs a second instead of hours.
+    contains "ignores files that are not mirrored to every boot mount" \
+             "$(cat "$script")" "memtest"
+
+    # And the exclusions must not have swallowed the thing the check is for.
+    contains "still compares the kernels that prove a copy is current" \
+             "$(cat "$script")" "find \"\$mp\" -type f"
 else
     _fail "health check derivation builds" "$(tail -10 "$WORK/err")"
 fi
