@@ -61,6 +61,41 @@ eq "37f2fb23 -> LE"  "$(hostid_bytes 37f2fb23 | od -An -tx1 | tr -s ' ' | sed 's
 eq "embedded NUL"    "$(hostid_bytes 00ff0100 | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//')" "00 01 ff 00"
 eq "always 4 bytes"  "$(hostid_bytes 0a0b0c0d | wc -c)" "4"
 
+section "write_hostid_file survives a symlink into a read-only filesystem"
+
+# Reproduces the shape of a NixOS live ISO: /etc/hostid is a symlink into
+# /etc/static, which lives in the read-only /nix/store. Writing through that
+# symlink dies with "fopen: Read-only file system" and takes install-me.sh down
+# at its first step, before any pool exists. Found by tests/vm-boot.sh; this is
+# the second-a-not-hours version of that check.
+mkdir -p rostore etcdir
+printf 'ORIGINAL' > rostore/hostid
+ln -sf "$PWD/rostore/hostid" etcdir/hostid
+# Both the file and its directory: mode bits on a directory only govern
+# creating and removing entries, so with the file left owner-writable the
+# write *succeeds* and this test proves nothing. (It did, on the first
+# attempt -- the "original was left alone" assertion is what caught it.)
+chmod a-w rostore/hostid rostore
+
+# First prove the test reproduces the bug, otherwise it proves nothing: a plain
+# write through the symlink must fail. Skipped as root, which ignores the mode
+# bits (CI runs this suite unprivileged, so it does run there).
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    expect_fail "writing through the symlink fails, as on a real ISO" \
+        bash -c 'printf X > etcdir/hostid'
+else
+    skip "writing through the symlink fails" "running as root ignores the read-only mode"
+fi
+
+write_hostid_file etcdir/hostid 37f2fb23
+eq "target is now a regular file, not a symlink" \
+   "$([ -L etcdir/hostid ] && echo symlink || echo regular)" "regular"
+eq "bytes are the little-endian hostid" \
+   "$(od -An -tx1 < etcdir/hostid | tr -s ' ' | sed 's/^ //;s/ $//')" "23 fb f2 37"
+eq "the read-only original was left alone" "$(cat rostore/hostid)" "ORIGINAL"
+
+chmod u+w rostore rostore/hostid
+
 section "by_id_path prefers a human-identifiable name"
 mkdir -p fakebin
 cat > fakebin/udevadm <<'X'

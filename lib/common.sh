@@ -67,6 +67,19 @@ detect_boot_mode () {
 # installer's hostid does not match what the installed system will use, the
 # first boot cannot import the root pool (boot.zfs.forceImportRoot = false).
 # Setting it here also lets us import a dirty pool from a crashed machine
+# /etc/hostid is a 4-byte integer in host byte order (little-endian here).
+#
+# Split out of set_hostid so the part that actually broke can be tested without
+# a VM: the `rm -f` is load-bearing. On a NixOS live ISO the target is a symlink
+# into /etc/static, which lives in the read-only /nix/store, and writing
+# *through* that symlink fails with "fopen: Read-only file system". Removing the
+# link first lets a real file be created in the writable tmpfs /etc.
+write_hostid_file () { # write_hostid_file FILE ID
+    local file=$1 id=$2
+    rm -f "$file"
+    printf '%b' "\\x${id:6:2}\\x${id:4:2}\\x${id:2:2}\\x${id:0:2}" > "$file"
+}
+
 # without -f, because we look like the same host.
 set_hostid () {
     local id=$1
@@ -83,8 +96,7 @@ set_hostid () {
     if command -v zgenhostid >/dev/null 2>&1; then
         zgenhostid -f "$id"
     else
-        # /etc/hostid is a 4-byte integer in host byte order (little-endian here).
-        printf '%b' "\\x${id:6:2}\\x${id:4:2}\\x${id:2:2}\\x${id:0:2}" > /etc/hostid
+        write_hostid_file /etc/hostid "$id"
     fi
     local got; got=$(hostid)
     [[ ${got,,} == "$id" ]] || die "failed to set hostid: wanted $id, hostid(1) reports $got"
