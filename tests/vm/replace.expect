@@ -165,14 +165,22 @@ send_log "\n\[step\] running replace-boot-disk.sh\n"
 # command gets eaten by that redraw and the command sits on the prompt line
 # unexecuted. The ISO's plain bash does not do this, which is why only the
 # phases that talk to the installed system were affected.
-send -s "printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=\$?"
+# Run it under bash, explicitly.
+#
+# root's login shell is fish (users.users.root.shell = pkgs.fish), and fish
+# does not accept "$?" -- it rejects it outright and tells you to use $status.
+# So the previous command was typed, submitted, and thrown away by fish before
+# replace-boot-disk.sh ever ran, which is exactly what the console showed: a
+# command on the prompt line and no script output. bash -c makes the pipeline,
+# the quoting and $? all mean what the script expects.
+send -s "bash -c \"printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo R-EXIT=\\\$?\""
 sleep 2
 send "\r"
 
 set timeout $replace_timeout
 expect {
-    -re {REPLACE-EXIT=0} { send_log "\n\[step\] replace finished cleanly\n" }
-    -re {REPLACE-EXIT=[1-9]} { bail 14 "replace-boot-disk.sh exited non-zero" }
+    -re {R-EXIT=0} { send_log "\n\[step\] replace finished cleanly\n" }
+    -re {R-EXIT=[1-9]} { bail 14 "replace-boot-disk.sh exited non-zero" }
     -re {FATAL} { bail 13 "replace-boot-disk.sh aborted with a FATAL" }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 15 "replace timed out after ${replace_timeout}s" }
