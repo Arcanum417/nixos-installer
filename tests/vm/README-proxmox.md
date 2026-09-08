@@ -28,13 +28,33 @@ suite uses, so a bug in the harness cannot reach a production VM:
 pveum user add ci@pve
 pveum user token add ci@pve vmtest --privsep 1     # prints the secret ONCE
 
-# The VMID band, not /vms. This is the real safety boundary.
-for id in $(seq 9000 9099); do
-  pveum acl modify "/vms/$id" --tokens 'ci@pve!vmtest' --roles PVEVMAdmin
+# Grant to BOTH the token and the user. See the note below -- this is the one
+# step that is easy to get wrong and produces a token that silently sees
+# nothing at all.
+for who in "--tokens ci@pve!vmtest" "--users ci@pve"; do
+  # The VMID band, not /vms. This is the real safety boundary.
+  for id in $(seq 9000 9099); do
+    # shellcheck disable=SC2086
+    pveum acl modify "/vms/$id" $who --roles PVEVMAdmin
+  done
+  # Whichever storage actually holds the disks and the ISOs -- run the
+  # preflight to find its name; it may be one storage for both.
+  # shellcheck disable=SC2086
+  pveum acl modify /storage/local-btrfs $who --roles PVEDatastoreAdmin
 done
-pveum acl modify /storage/local     --tokens 'ci@pve!vmtest' --roles PVEDatastoreAdmin
-pveum acl modify /storage/local-lvm --tokens 'ci@pve!vmtest' --roles PVEDatastoreUser
 ```
+
+**`--privsep 1` intersects the token's rights with the user's, and a freshly
+created user has none.** Granting only the token therefore yields a token with
+no effective privileges — and the failure is quiet rather than a 403: the
+storage endpoints return `{"data":[]}`, so it looks like the node has no
+storage rather than like a permissions problem. Grant both, or create the token
+with `--privsep 0` and grant the user only.
+
+`PVEDatastoreAdmin` is needed on the storage that holds the ISOs, because
+uploading one requires `Datastore.AllocateTemplate`. If disks and ISOs live on
+different storages, the disk one can be the weaker `PVEDatastoreUser`
+(`Datastore.AllocateSpace` + `Datastore.Audit`).
 
 Write the header to a file rather than passing it on a command line, where it
 would be world-readable in `ps`:
@@ -173,6 +193,9 @@ Flagged rather than buried, since none of this has met a real node yet:
   disagree about whether a token may use `termproxy`/`vncwebsocket`. Moot here —
   this backend uses `ssh` + `socat` and needs no PVE ticket — but relevant if
   anyone reworks the console path.
+- **Whether a privsep token can read its own task status.** It works here, but
+  the harness polls task UPIDs constantly, so if you see tasks appear to hang,
+  check for `Sys.Audit` being needed on `/nodes/{node}`.
 - **`qm wait`.** There is a node-side `qm wait <vmid> --timeout N` with no REST
   equivalent; `vm_wait_stopped` polls `/status/current` instead, which works
   from off-box without root.

@@ -131,6 +131,28 @@ for pair in "$PVE_STORAGE:images" "$PVE_ISO_STORAGE:iso"; do
     fi
 done
 
+# A token that can see nothing looks identical to an empty node, and the
+# storage endpoints return {"data":[]} rather than 403. Without this check the
+# "VMID band is free" section below reports every VMID free -- a false pass on
+# a safety check, which is the worst kind. Verified against a real node, where
+# a --privsep token with no matching *user* ACL behaved exactly this way.
+section "the token can actually see things"
+if _pve_get "nodes/$PVE_NODE/qemu" >/dev/null 2>&1; then
+    _pass "can enumerate VMs on $PVE_NODE"
+else
+    _fail "can enumerate VMs on $PVE_NODE" \
+          "the token cannot list VMs. With --privsep 1 the token's rights are
+  intersected with the USER's, and a fresh user has none -- grant the same ACLs
+  to --users ci@pve as to --tokens ci@pve!vmtest. See README-proxmox.md."
+fi
+if [[ $(_pve_get "nodes/$PVE_NODE/storage" | jq -r '.data | length') -gt 0 ]]; then
+    _pass "can see at least one storage"
+else
+    _fail "can see at least one storage" \
+          "zero storages visible. This is a permissions symptom, not an empty node:
+  grant Datastore privileges to both the token and the user (see above)."
+fi
+
 section "VMID band is free"
 for off in 1 2; do
     vmid=$(( PVE_VMID_BASE + off ))
@@ -143,6 +165,8 @@ for off in 1 2; do
   Move it, or point the suite elsewhere with PVE_VMID_BASE." ;;
         esac
     else
+        # Only meaningful given the visibility check above passed; a blind
+        # token cannot distinguish "absent" from "not allowed to look".
         _pass "$vmid is free"
     fi
 done
