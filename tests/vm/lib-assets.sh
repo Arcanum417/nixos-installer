@@ -79,6 +79,13 @@ write_test_unique_nix () { # write_test_unique_nix PATH
   documentation.nixos.enable = false;
   documentation.man.generateCaches = false;
 
+  # Docker is a large part of this closure and delays every boot ("A start job
+  # is running for Docker Application Container Engine"), while this suite
+  # asserts nothing about it: it drives install-me.sh with the data pool
+  # skipped, so there is no data-root for docker to wait on. The docker/ZFS
+  # wiring in configuration.nix is covered by tests/nix-eval.sh instead.
+  virtualisation.docker.enable = false;
+
   # If something does have to be built in the guest, let it use every vCPU
   # rather than nix's default of one job.
   nix.settings.max-jobs = "auto";
