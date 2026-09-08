@@ -68,8 +68,24 @@ proc serial_connect {} {
     # VM_SERIAL_CMD to an ssh+socat invocation. `-T` and a bare `socat -`
     # matter there: a remote pty would translate \n to \r\n and corrupt the
     # transcript.
-    if {[info exists env(VM_SERIAL_CMD)] && $env(VM_SERIAL_CMD) ne ""} {
-        eval spawn [split $env(VM_SERIAL_CMD)]
+    # ::env, fully qualified. This sits inside a proc, and a proc does not see
+    # the global `env` array unless it says so -- an unqualified env(...) here
+    # silently referred to a nonexistent local and every run fell back to nc,
+    # which on a Proxmox run meant connecting to whatever happened to be on
+    # that TCP port instead of to the guest. Same class of trap as spawn_id.
+    if {[info exists ::env(VM_SERIAL_CMD)] && $::env(VM_SERIAL_CMD) ne ""} {
+        # Retry, and say so when it fails. The Proxmox console is a unix socket
+        # that QEMU creates at VM start and removes at stop, so a connect
+        # attempt during a reboot legitimately fails -- and a spawn that fails
+        # leaves spawn_id pointing at the previous, now-closed connection,
+        # which surfaces much later as an inscrutable "spawn id ... not open".
+        set ok 0
+        for {set try 0} {$try < 30} {incr try} {
+            if {![catch {eval spawn [split $::env(VM_SERIAL_CMD)]} err]} { set ok 1; break }
+            send_log "\n\[serial\] spawn failed (try $try): $err\n"
+            sleep 2
+        }
+        if {!$ok} { bail 26 "could not attach to the guest console: $err" }
     } else {
         spawn nc 127.0.0.1 $port
     }
