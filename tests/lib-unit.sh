@@ -71,6 +71,11 @@ case "$*" in
   *--name=/dev/vda*)     echo "disk/by-id/virtio-abc123" ;;
   *--name=/dev/dm-0*)    echo "disk/by-id/dm-name-vg0 disk/by-id/dm-uuid-LVM-xyz" ;;
   *--name=/dev/nvme9n1*) echo "disk/by-id/nvme-eui.aaaa disk/by-id/wwn-0xbbbb" ;;
+  # A real NVMe disk carries two by-id links of equal rank: the device-level
+  # nvme-MODEL_SERIAL and the namespace-scoped nvme-MODEL_SERIAL_1. udevadm
+  # does not promise an order, so both orderings must give the same answer.
+  *--name=/dev/nvme7n1*) echo "disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2_1 disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2" ;;
+  *--name=/dev/nvme8n1*) echo "disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2 disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2_1" ;;
   *)                     echo "" ;;
 esac
 X
@@ -81,6 +86,22 @@ eq "virtio is accepted"                  "$(by_id_path /dev/vda)"     "/dev/disk
 eq "dm-* is never a whole disk"          "$(by_id_path /dev/dm-0)"    ""
 eq "falls back to eui when nothing better" "$(by_id_path /dev/nvme9n1)" "/dev/disk/by-id/nvme-eui.aaaa"
 eq "no by-id at all"                     "$(by_id_path /dev/sdz)"     ""
+
+# Two equal-rank links for one disk must not depend on udevadm's ordering. The
+# VM suite caught this for real: the pool was recorded with nvme-..._disk2 at
+# install time, a later scan returned nvme-..._disk2_1 for the same device, the
+# string comparison in select_disks did not match, and a live mirror member was
+# offered as a candidate for a fresh disk. Only assert_disks_free stopped it.
+eq "namespace-suffixed link loses (suffix first)"  "$(by_id_path /dev/nvme7n1)" "/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2"
+eq "namespace-suffixed link loses (suffix second)" "$(by_id_path /dev/nvme8n1)" "/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_disk2"
+
+section "same_disk compares devices, not by-id spelling"
+eq "identical paths"      "$(same_disk /dev/null /dev/null   && echo y || echo n)" "y"
+eq "different devices"    "$(same_disk /dev/null /dev/zero   && echo y || echo n)" "n"
+# An absent disk must not read as "some other disk": during an install the
+# layout can name a member that is not currently attached.
+eq "absent, same string"  "$(same_disk /dev/disk/by-id/absent-x /dev/disk/by-id/absent-x && echo y || echo n)" "y"
+eq "absent, different"    "$(same_disk /dev/disk/by-id/absent-x /dev/disk/by-id/absent-y && echo y || echo n)" "n"
 
 section "disk-layout.json round trip"
 BOOT_MODE=uefi; ROOT_POOL=zroot; STATE_VERSION=25.05; set_part_numbers uefi

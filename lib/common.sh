@@ -116,6 +116,28 @@ live_medium_disks () {
 # reconstructed from lsblk columns. Prefers human-identifiable names
 # (model_serial) over opaque ones (wwn, eui) so `zpool status` names the disk
 # you have to physically pull.
+# Do two by-id paths name the same physical disk?
+#
+# String equality is not enough, and this is not hypothetical: an NVMe disk has
+# both nvme-MODEL_SERIAL and the namespace-scoped nvme-MODEL_SERIAL_1 pointing
+# at the same device. A layout recorded under one name and a scan that returned
+# the other compared unequal, so a disk already in the mirror was offered as a
+# candidate for a fresh one. Resolve both and compare the devices.
+#
+# Falls back to string equality when a path cannot be resolved -- during an
+# install the layout may name a disk that is currently absent, and "absent" must
+# not silently read as "some other disk".
+same_disk () { # same_disk PATH_A PATH_B
+    local a b
+    a=$(readlink -f "$1" 2>/dev/null || true)
+    b=$(readlink -f "$2" 2>/dev/null || true)
+    if [[ -n $a && -n $b && -e $a && -e $b ]]; then
+        [[ $a == "$b" ]]
+    else
+        [[ $1 == "$2" ]]
+    fi
+}
+
 by_id_path () { # by_id_path /dev/sda
     local dev=$1 link best="" rank=99 r
     while read -r link; do
@@ -132,7 +154,25 @@ by_id_path () { # by_id_path /dev/sda
             scsi-*)                   r=6 ;;
             *)                        r=7 ;;
         esac
-        if (( r < rank )); then rank=$r; best=$link; fi
+        if (( r < rank )); then
+            rank=$r; best=$link
+        elif (( r == rank )) && [[ -n $best ]]; then
+            # Deterministic tie-break, and not a theoretical one. udevadm does
+            # not promise a symlink order, and an NVMe disk really does have
+            # two by-id links of equal rank: nvme-MODEL_SERIAL and the
+            # namespace-scoped nvme-MODEL_SERIAL_1, both pointing at the same
+            # device. Taking whichever happened to arrive first meant the same
+            # disk could be recorded under one name at install time and
+            # rediscovered under the other later -- which is how a live mirror
+            # member ended up offered as a replacement candidate.
+            #
+            # Shortest, then lexicographic: stable across runs, and it prefers
+            # the device-level link over the namespace-scoped one.
+            if (( ${#link} < ${#best} )) \
+               || { (( ${#link} == ${#best} )) && [[ $link < $best ]]; }; then
+                best=$link
+            fi
+        fi
     done < <(udevadm info --query=symlink --name="$dev" 2>/dev/null | tr ' ' '\n')
     [[ -n $best ]] || return 1
     echo "/dev/$best"
@@ -190,7 +230,7 @@ select_disks () {
         skip=""
         grep -qx "${DISK_KNAME[$i]}" <<<"$live" && skip=1
         for s in ${excluded[@]+"${excluded[@]}"}; do
-            [[ $s == "${DISK_BYID[$i]}" ]] && skip=1
+            same_disk "$s" "${DISK_BYID[$i]}" && skip=1
         done
         [[ -z $skip ]] || continue
         cand+=("$i")
@@ -206,7 +246,7 @@ select_disks () {
         for n in "${!cand[@]}"; do
             i=${cand[$n]}; mark=" "
             for s in ${SELECTED[@]+"${SELECTED[@]}"}; do
-                [[ $s == "${DISK_BYID[$i]}" ]] && mark="*"
+                same_disk "$s" "${DISK_BYID[$i]}" && mark="*"
             done
             printf "   %s %2d) %s\n" "$mark" "$((n+1))" "${DISK_LABEL[$i]}"
         done
@@ -221,7 +261,7 @@ select_disks () {
             i=${cand[$((reply-1))]}
             keep=(); found=""
             for s in ${SELECTED[@]+"${SELECTED[@]}"}; do
-                if [[ $s == "${DISK_BYID[$i]}" ]]; then found=1; else keep+=("$s"); fi
+                if same_disk "$s" "${DISK_BYID[$i]}"; then found=1; else keep+=("$s"); fi
             done
             if [[ -n $found ]]; then
                 SELECTED=(${keep[@]+"${keep[@]}"})

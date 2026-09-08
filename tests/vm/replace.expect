@@ -63,7 +63,7 @@ proc reconnect_or_bail {} {
 proc wait_prompt {} {
     global spawn_id
     expect {
-        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        -re {RDY-4b91>|\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
         eof     { reconnect_or_bail; send -s "\r"; exp_continue }
         timeout { }
     }
@@ -95,6 +95,34 @@ proc wait_shell_ready {} {
     }
     return 0
 }
+
+# Hand the scripted part of the session to bash. See postboot.expect for the
+# full reasoning: root's shell is fish, fish repaints the line as characters
+# arrive and installs a command-not-found handler, and over a slow emulated
+# serial line that turns a typed command into a different one. bash with a
+# fixed one-line prompt does none of that.
+proc enter_bash {} {
+    global spawn_id
+    for {set i 0} {$i < 20} {incr i} {
+        send -s "exec bash --noprofile --norc"
+        sleep 1
+        send "\r"
+        set timeout 30
+        expect {
+            -re {RDY-4b91>} { return 1 }
+            timeout { }
+        }
+        send -s "PS1='RDY-4b91> '"
+        sleep 1
+        send "\r"
+        expect {
+            -re {RDY-4b91>} { return 1 }
+            timeout { }
+        }
+    }
+    return 0
+}
+
 
 serial_connect
 
@@ -143,6 +171,10 @@ expect {
         exp_continue
     }
 }
+if {![enter_bash]} {
+    bail 25 "reached a shell but could not hand the session to bash"
+}
+
 send -s "dmesg -n 1\r"
 wait_prompt
 
@@ -181,7 +213,24 @@ set timeout $replace_timeout
 expect {
     -re {R-EXIT=0} { send_log "\n\[step\] replace finished cleanly\n" }
     -re {R-EXIT=[1-9]} { bail 14 "replace-boot-disk.sh exited non-zero" }
-    -re {FATAL} { bail 13 "replace-boot-disk.sh aborted with a FATAL" }
+    -re {FATAL} {
+        # Do not bail on the marker alone. `die` prints " FATAL  <reason>" and
+        # matching "FATAL" fires as soon as those five characters arrive, so
+        # bailing here closed the connection mid-line and the transcript ended
+        # with a two-character fragment -- once literally " FATAL  /d", which
+        # was the start of "/dev/disk/by-id/... is in use by imported pool".
+        # The reason is the whole value of the failure, so drain the rest of
+        # the line first and report it.
+        set reason ""
+        set timeout 30
+        expect {
+            -re {[^\r\n]*} { set reason $expect_out(0,string) }
+            timeout { }
+        }
+        set reason [string trim $reason]
+        if {$reason eq ""} { set reason "reason not captured" }
+        bail 13 "replace-boot-disk.sh aborted with a FATAL: $reason"
+    }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 15 "replace timed out after ${replace_timeout}s" }
 }

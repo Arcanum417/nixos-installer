@@ -64,10 +64,48 @@ proc reconnect_or_bail {} {
 proc wait_prompt {} {
     global spawn_id
     expect {
-        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        -re {RDY-4b91>|\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
         eof     { reconnect_or_bail; send -s "\r"; exp_continue }
         timeout { }
     }
+}
+
+# Hand the scripted part of the session to bash.
+#
+# configuration.nix gives root fish, and fish is a poor thing to type into
+# programmatically. It repaints the line as characters arrive (syntax
+# highlighting, autosuggestions) and it installs a command-not-found handler,
+# so a command typed over a slow emulated serial line can be redrawn into
+# something else -- observed as `echo PROBE:...` arriving as `eecho PROBE:...`,
+# which fish then reported as an unknown command. The probe never ran, and the
+# scraper picked a redraw fragment out of the transcript instead of a value, so
+# every probe in this phase came back empty while the boot itself passed.
+#
+# Landing in fish first still proves the login shell works, which is the part
+# worth testing. From here on the shell is bash with a fixed one-line prompt:
+# no repainting, no autosuggestion, no command-not-found, no $? vs $status.
+proc enter_bash {} {
+    global spawn_id
+    for {set i 0} {$i < 20} {incr i} {
+        send -s "exec bash --noprofile --norc"
+        sleep 1
+        send "\r"
+        set timeout 30
+        expect {
+            -re {RDY-4b91>} { return 1 }
+            timeout { }
+        }
+        # bash's own default prompt is not the marker we want to key on, so set
+        # it explicitly once we are in.
+        send -s "PS1='RDY-4b91> '"
+        sleep 1
+        send "\r"
+        expect {
+            -re {RDY-4b91>} { return 1 }
+            timeout { }
+        }
+    }
+    return 0
 }
 
 # Prove the shell is actually reading, not just that a prompt marker appeared.
@@ -145,6 +183,10 @@ expect {
         send -s "\r"
         exp_continue
     }
+}
+
+if {![enter_bash]} {
+    bail 25 "reached a shell but could not hand the session to bash"
 }
 
 send -s "dmesg -n 1\r"
