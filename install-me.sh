@@ -329,7 +329,14 @@ confirm "Review /mnt/etc/nixos now if you want. Continue to nixos-install?" || d
 # -------------------------------------------------------- 11. install ------
 
 hdr "Running nixos-install"
-nixos-install --root "$MNT"
+# NIXOS_INSTALL_ARGS is an escape hatch for automated runs, empty by default so
+# a real install is unchanged. tests/vm-boot.sh sets --no-channel-copy: copying
+# the channel means writing tens of thousands of small files into a fresh ZFS
+# pool, which is by far the slowest step of an emulated install and has no
+# bearing on whether the machine boots. Do not set it for a real machine --
+# `nixos-rebuild` there should have a channel to work from.
+# shellcheck disable=SC2086
+nixos-install --root "$MNT" ${NIXOS_INSTALL_ARGS-}
 
 # --------------------------------------------------------- 12. finish ------
 
