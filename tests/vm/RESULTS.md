@@ -62,20 +62,33 @@ in the committed code but **have not yet been re-verified by a run**:
 
 ### Not yet established
 
-- **`replace`.** The phase starts and the guest does boot -- the earlier "stuck
-  in firmware" reading was wrong, it was just slow. What it then does is crawl:
-  the console sat on
+- **`replace`.** Now gets furthest of all the attempts: the guest boots, the
+  driver reaches a shell, and it launches `/etc/nixos/replace-boot-disk.sh`.
+  The script then prints **nothing at all** and the phase sits until its
+  timeout.
 
-  ```
-  A start job is running for Network Time Synchronization (47s / 1min 30s)
-  ```
+  Narrowing done so far, so it is not repeated:
 
-  advancing roughly 23 *guest* seconds across several hours of wall clock. The
-  host was not the problem (load 2.9 on 18 cores, QEMU holding ~200% CPU), so
-  the guest was executing, just far slower than the other phases. Cause
-  **unresolved**. The fixture now disables timesyncd and the scrub timer, which
-  removes two known sinks, but that has not been re-tested. `replace` has never
-  reached `replace-boot-disk.sh`.
+  - The shell really was reached, and the command really was sent. The OSC 133
+    prompt markers bracket the send in the transcript, and more appear after
+    it, so this is not a premature pattern match.
+  - It is not `need_cmds` failing. `configuration.nix` installs `gptfdisk`,
+    `jq`, `dosfstools` and `e2fsprogs` explicitly for this script, and a
+    `need_cmds` failure would `die` with a visible FATAL and a non-zero
+    `REPLACE-EXIT` anyway. Neither appears.
+  - It is not the host. Load stayed at 2.9 on 18 cores with QEMU holding
+    ~200%, and the disk images are 6 GiB actual, so neither CPU nor host I/O
+    is starved.
+
+  The remaining suspect is the script's first real work -- `read_disk_layout`
+  then `zpool status -P zroot` -- blocking with one mirror member missing and
+  one blank disk attached. **Unconfirmed:** checking it needs the serial
+  console, which the driver holds for the duration. Attach to a VM left by
+  `VM_KEEP=1` and run `zpool status` by hand to settle it.
+
+  An earlier note in this file said the guest "sits in firmware without
+  reaching a shell". That was wrong; it boots, and slowly.
+
 - **The whole `bios` matrix.** Never run.
 - **A clean re-run of `uefi`** with the two harness fixes in place.
 
