@@ -45,6 +45,34 @@ PROBE:members_online:6             PROBE:degraded:0
 | `degraded`, `replace` | **not yet run to completion** |
 | `bios` matrix | **not yet run** |
 
+## A VM-environment limitation worth knowing
+
+On the first boot after install, `/boot` did not mount:
+
+```
+DEPEND] Dependency failed for /boot.
+DEPEND] Dependency failed for File System …/nvme-QEMU_NVMe_Ctrl_disk0_1-part1.
+```
+
+Note the `_1`. udev appended a disambiguation suffix to that disk's by-id name
+when the installer recorded it, and the suffix did not come back the same way
+on the next boot, so the path in `disk-layout.json` no longer existed. That is
+QEMU's NVMe naming in this emulator, not a fault in the installer -- but it
+does mean **this suite cannot validate by-id stability across reboots**, which
+is worth remembering before trusting it on that point.
+
+Two useful things fell out of it anyway:
+
+- **`nofail` demonstrably works.** A mirror member's ESP failed to mount and
+  the machine still booted to a shell with the pool ONLINE, which is exactly
+  what `nofail` plus `zfs-health.nix` are there for.
+- **It exposed a weak assertion.** The removable-EFI check originally looked
+  only under `/boot`, so with that mount missing it read an empty directory.
+  Worse, before the transcript parser was fixed it *passed anyway*, because the
+  greedy match was matching the echoed command text `ls
+  /boot/EFI/BOOT/BOOTX64.EFI` rather than the command's output -- a false pass.
+  It now checks every ESP, which is the actual invariant.
+
 ## Two real defects these tests found
 
 **`set_hostid` could not run on a NixOS ISO.** `/etc/hostid` there is a symlink

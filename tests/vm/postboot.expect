@@ -140,7 +140,11 @@ probe forceimport    "cat /proc/cmdline | tr ' ' '~'"
 
 # The UEFI promise: GRUB is installed at the removable path on every ESP, so
 # firmware finds it without an NVRAM entry pointing at a specific disk.
-probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI"
+# Check every ESP, not just /boot. The invariant is that GRUB is installed at
+# the removable path on each mirror member's ESP -- which one happens to be
+# mounted at /boot is not the point, and hardcoding /boot made this assertion
+# read an empty directory whenever that particular mount failed.
+probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI /boot-fallback-*/EFI/BOOT/BOOTX64.EFI"
 probe health_check   "zfs-health-check || true"
 
 send_log "\n\[step\] probes done\n"
