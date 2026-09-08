@@ -80,8 +80,25 @@ fi
 # Facts come back from the guest as PROBE:<name>:<value> lines on the serial
 # log. Values have newlines squashed to '~' so one probe is always one line.
 probe () { # probe LOGFILE NAME -> value
-    sed -n "s/.*PROBE:$2:\(.*\)/\1/p" "$1" | tail -n1 | tr -d '\r'
+    # The transcript is a serial console capture, so it needs normalising
+    # before the value can be read out of it:
+    #   - lines end in CR, not LF, so without translating them sed sees the
+    #     whole file as one line and a greedy match swallows everything
+    #   - it is full of CSI and OSC escapes (the shell emits OSC 133 prompt
+    #     markers around every command)
+    #   - the guest squashes newlines in a value to '~', which leaves one
+    #     trailing '~' from the value's own final newline
+    #   - each command is echoed before it runs, so the literal
+    #     'PROBE:name:$( ... )' text appears too and must be skipped
+    tr '\r' '\n' < "$1" \
+      | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' \
+            -e 's/\x1b\][0-9;]*[A-Za-z]*//g' \
+            -e 's/\x07//g' \
+      | grep -a "PROBE:$2:" | grep -av '[$](' \
+      | sed -n "s/.*PROBE:$2:\(.*\)/\1/p" \
+      | tail -n1 | sed -e 's/~*$//'
 }
+
 
 # The driver writes its own transcript via expect's log_file (unbuffered, and
 # it captures send_user too). Redirecting stdout here as well would only
