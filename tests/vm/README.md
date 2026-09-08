@@ -75,13 +75,22 @@ Expect **hours, not minutes**, for a full run — `nixos-install` is building an
 activating a system closure under emulation. This is a release gate you run
 deliberately, not something to put in a pre-commit hook.
 
-Do not reach for more vCPUs or UTM's `ForceMulticore` to speed this up — both
-were tried and measured. QEMU stayed at ~104% CPU on an 18-core host either
-way, because the guest workload is serial (nix builds one derivation at a time,
-and a configure script cannot be parallelised), and multi-threaded TCG also
-deadlocked an install outright at 0% CPU. What actually helps is giving the
-guest less to *build*: the fixture disables the NixOS manual and the man cache,
-which are the only large derivations not available from the binary cache.
+What actually helps is giving the guest less to **build**. The fixture disables
+the NixOS manual and the man cache, which are generated per configuration and
+so are the only large derivations never available from the binary cache — with
+them on, the run spends a long stretch compiling inside an emulator; with them
+off it is dominated by downloads instead.
+
+Two things to know before trying to tune this further:
+
+- **Sample the right process.** `QEMUHelper` is a wrapper and always reads ~0%
+  CPU. The emulator is `QEMULauncher`, which sits around 300% during an
+  install. Watching the wrapper makes a healthy run look dead.
+- **Long silences are normal.** `copying channel...` and the closure copy print
+  nothing for a long time while working, so a static transcript is not a hang.
+
+Whether UTM's `ForceMulticore` helps is unmeasured; the harness leaves it off
+with 4 vCPUs because that is the configuration installs have completed on.
 
 ## When something fails
 

@@ -79,10 +79,8 @@ write_test_unique_nix () { # write_test_unique_nix PATH
   documentation.nixos.enable = false;
   documentation.man.generateCaches = false;
 
-  # If something does have to be built in the guest, let it use every vCPU.
-  # Measured: QEMU sat at ~104% CPU on an 18-core host during a build, because
-  # nix was building one derivation at a time on one core -- multi-threaded TCG
-  # cannot help a serial guest workload.
+  # If something does have to be built in the guest, let it use every vCPU
+  # rather than nix's default of one job.
   nix.settings.max-jobs = "auto";
   nix.settings.cores = 0;
 }

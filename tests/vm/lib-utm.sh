@@ -202,21 +202,20 @@ vm_write_config () {
     # an arm64 host, so QEMU runs in TCG. That is the whole reason this suite
     # is slow and opt-in.
     #
-    # ForceMulticore stays OFF, and this was measured rather than guessed.
-    # Turning it on with 8 vCPUs looked like the obvious speed lever, but:
+    # ForceMulticore stays off and CPUCount stays at 4 because that is the
+    # configuration these tests have actually completed installs on. Whether
+    # turning it on helps is UNMEASURED -- do not assume either way.
     #
-    #   - it bought nothing. QEMU sat at ~104% CPU on an 18-core host either
-    #     way, because the guest workload is serial: nix builds one derivation
-    #     at a time and a configure script cannot be parallelised. Multi-
-    #     threaded TCG had nothing to spread across threads.
-    #   - it destabilised the guest. An install that had previously run
-    #     hundreds of substitutions stalled dead at "copying channel..." with
-    #     QEMU at 0.0% CPU -- a multi-threaded TCG deadlock, not slow progress.
+    # If you do measure it, sample the right process. `QEMUHelper` is a wrapper
+    # and always reads ~0% CPU; the emulator is `QEMULauncher`, which runs at
+    # ~300% during an install. Watching the wrapper made a normal run look like
+    # a dead one and sent this investigation down a blind alley once already.
     #
-    # The thing that actually made installs faster was giving the guest less to
-    # build (see documentation.* in lib-assets.sh), not more cores to build on.
-    jq -n \
-        --arg name "$name" --arg uuid "$uuid" \
+    # Also note that long silences are normal, not stalls: `copying channel...`
+    # and the closure copy print nothing for a long time while working.
+    #
+    # What did measurably help was giving the guest less to *build* (see
+    # documentation.* in lib-assets.sh) rather than more cores to build on.
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
