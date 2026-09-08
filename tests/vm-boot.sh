@@ -189,11 +189,42 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
 
     eq "$firmware: hostname from unique.nix"  "$(probe "$log" hostname)"   "$TEST_HOSTNAME"
     eq "$firmware: hostid survived the install" "$(probe "$log" hostid)"   "$TEST_HOSTID"
-    contains "$firmware: root pool is ONLINE"  "$(probe "$log" poolstate)" "zroot	ONLINE"
+    # The probe collapses the tab from `zpool list -H` to a single space. The
+    # emulated serial console does not preserve tabs, so asserting on one made
+    # this fail with "[zroot ONLINE] lacks [zroot<tab>ONLINE]".
+    contains "$firmware: root pool is ONLINE"  "$(probe "$log" poolstate)" "zroot ONLINE"
     contains "$firmware: pool reports healthy" "$(probe "$log" poolhealthy)" "healthy"
     eq "$firmware: root is the zfs dataset"    "$(probe "$log" rootfs)"    "zroot/root"
     contains "$firmware: layout json matches the firmware" "$(probe "$log" layout)" "\"mode\":\"$firmware\""
     contains "$firmware: layout json records $NDISKS disks" "$(probe "$log" layout)" "\"n\":$NDISKS"
+
+    # A clean boot means more than "a shell appeared". These facts are already
+    # collected by postboot.expect on every phase, so asserting them costs no
+    # extra emulated time -- they were simply going unchecked.
+
+    # is-system-running reports "degraded" if any unit failed, which on a
+    # machine this configuration built is a defect worth failing on. The
+    # failed-unit names come along so the failure says which one.
+    eq "$firmware: systemd reports the system running" \
+       "$(probe "$log" systemstate)" "running"
+    eq "$firmware: no failed units" "$(probe "$log" failedunits)" ""
+
+    # The happy path of zfs-health.nix. The degraded phase already asserts this
+    # check notices a broken pool; nothing asserted it stays quiet on a good one.
+    contains "$firmware: zfs-health-check reports healthy" \
+             "$(probe "$log" health_check)" "healthy"
+    eq "$firmware: no vdev is DEGRADED" "$(probe "$log" degraded)" "0"
+
+    # disk-layout.nix gives every mirror member its own ESP and its own mount.
+    # On a clean boot all of them must be mounted, not just the one at /boot.
+    contains "$firmware: every mirror member's boot partition is mounted" \
+             "$(probe "$log" bootmounts)" "/boot-fallback-$((NDISKS - 1))"
+
+    # boot.zfs.forceImportRoot = false is the reason the hostId handling has to
+    # be right; if the kernel command line carried a force flag, a broken
+    # hostId would be masked and this suite would prove nothing about it.
+    lacks "$firmware: root pool imported without a force flag" \
+          "$(probe "$log" forceimport)" "zfs_force"
 
     if [[ $firmware == uefi ]]; then
         contains "$firmware: GRUB is at the removable path" \
@@ -266,6 +297,19 @@ phase_replace () { # phase_replace NAME FIRMWARE PORT
     contains "$firmware: bootloader reinstalled onto the new disk" "$(cat "$log")" "install-bootloader"
     contains "$firmware: pool healthy again after resilver" "$(probe "$log" poolhealthy)" "healthy"
     contains "$firmware: layout json now names the new disk" "$(probe "$log" layout)" "\"n\":$NDISKS"
+
+    # A resilver that silently stopped at N-1 members would still report the
+    # pool healthy, so check the state and the degraded count too.
+    contains "$firmware: pool is ONLINE again, not just not-failing" \
+             "$(probe "$log" poolstate)" "zroot ONLINE"
+    eq "$firmware: no vdev left DEGRADED after the resilver" \
+       "$(probe "$log" degraded)" "0"
+
+    # The hostId is stamped into the pool labels, and forceImportRoot is false,
+    # so a replace that disturbed it would leave a machine that cannot import
+    # its own root pool on the next boot. replace-boot-disk.sh does not touch
+    # it; this is what proves that.
+    eq "$firmware: hostid unchanged by the replace" "$(probe "$log" hostid)" "$TEST_HOSTID"
 
     vm_wait_stopped "$name" 600 || vm_kill "$name"
 }

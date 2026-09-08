@@ -221,7 +221,7 @@ proc probe {name cmd} {
 
 probe hostname       "hostname"
 probe systemstate    "systemctl is-system-running"
-probe poolstate      "zpool list -H -o name,health"
+probe poolstate      "zpool list -H -o name,health | tr '\\t' ' ' | tr -s ' '"
 probe poolhealthy    "zpool status -x zroot"
 probe members_online "zpool status zroot | grep -c ONLINE"
 probe degraded       "zpool status zroot | grep -c DEGRADED"

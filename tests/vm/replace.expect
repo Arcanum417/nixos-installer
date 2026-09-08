@@ -268,7 +268,7 @@ proc probe {name cmd} {
 
 
 probe poolhealthy "zpool status -x zroot"
-probe poolstate   "zpool list -H -o name,health"
+probe poolstate   "zpool list -H -o name,health | tr '\\t' ' ' | tr -s ' '"
 probe layout      "jq -c '{mode:.bootMode,n:(.bootDisks|length)}' /etc/nixos/disk-layout.json"
 probe members     "zpool status zroot | grep -c ONLINE"
 probe degraded    "zpool status zroot | grep -c DEGRADED"
