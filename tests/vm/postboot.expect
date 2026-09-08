@@ -99,7 +99,10 @@ expect {
         # docker, timers, etc) and prints its prompt only when something asks
         # for it, so a single early \r is consumed by the boot spew.
         incr nudges
-        if {$nudges > 40} { bail 22 "no shell on the serial console (did GRUB boot?)" }
+        # 120 cycles, not 40. A 20-minute budget was not enough: the replace
+        # phase's guest boots but crawls, and exhausting the nudges made a slow
+        # boot indistinguishable from a dead one. An hour is still bounded.
+        if {$nudges > 120} { bail 22 "no shell on the serial console after ~1h of nudging (did GRUB boot?)" }
         send -s "\r"
         exp_continue
     }
