@@ -9,41 +9,66 @@ NixOS `nixos-25.05` minimal ISO (x86_64), guest emulated under QEMU TCG.
 
 ## Where it stands
 
-**The `install` phase passes. The `boot` phase reaches the installed system and
-its facts are correct. `degraded` and `replace` have not been run to
-completion, and the whole `bios` matrix is untouched.**
-
-`install`, from a real run:
+A full `uefi` run has been executed. Results, verbatim:
 
 ```
+assets
+  ok   installer ISO cached (1.7G)
+  ok   repo ISO built
+  ok   installer ISO repacked with a serial console as the default entry
 uefi
   ok   uefi: guest serial port opens
   ok   uefi: install-me.sh completes on a 3-disk mirror
   ok   uefi: hostid was set before any pool existed
   ok   uefi: pool is a mirror
   ok   uefi: pools exported for a clean first import
-vm-boot: 8 checks, 0 failed, 0 skipped
+  ok   uefi: installed system boots off the mirror
+  ok   uefi: hostname from unique.nix
+  ok   uefi: hostid survived the install
+  ok   uefi: root pool is ONLINE
+  ok   uefi: pool reports healthy
+  ok   uefi: root is the zfs dataset
+  ok   uefi: layout json matches the firmware
+  ok   uefi: layout json records 3 disks
+  FAIL uefi: GRUB is at the removable path
+  ok   uefi: boots with the first mirror member pulled
+  ok   uefi: pool notices the missing disk
+  ok   uefi: pool is DEGRADED but usable
+  ok   uefi: root still mounted from the pool
+  ok   uefi: a missing /boot did not block startup (nofail)
+  FAIL uefi: zfs-health-check reports the degradation
 ```
 
-`boot`, probes read off the installed system after it booted through its own
-GRUB off the mirror:
+**The thing this suite exists to prove works.** A machine installed onto a
+3-way ZFS root mirror boots, and it still boots with the first mirror member --
+the one whose ESP is mounted at `/boot` -- pulled, coming up DEGRADED but
+usable with `/` intact.
 
-```
-PROBE:hostname:vmtest-box          PROBE:systemstate:running
-PROBE:poolstate:zroot	ONLINE     PROBE:poolhealthy:pool 'zroot' is healthy
-PROBE:rootfs:zroot/root            PROBE:layout:{"mode":"uefi","n":3}
-PROBE:members_online:6             PROBE:degraded:0
-```
+Both failures were faults in the harness, not the installer, and both are fixed
+in the committed code but **have not yet been re-verified by a run**:
 
-| Component | Status |
-|---|---|
-| `.utm` bundle generation, firmware switching, disk add/remove/blank | verified |
-| VM lifecycle (start, confirmed stop, destroy by prefix) | verified |
-| Repo ISO, installer ISO repack for serial | verified |
-| `install` phase | **passes, 8 checks** |
-| `boot` phase | installed system boots off the mirror; probes correct |
-| `degraded`, `replace` | **not yet run to completion** |
-| `bios` matrix | **not yet run** |
+- *GRUB is at the removable path* -- the probe looked only under `/boot`. See
+  the section below: that mount had failed, so it read an empty directory. It
+  now checks every ESP. Note this assertion was *passing* before the transcript
+  parser was fixed, because the greedy match was matching the echoed command
+  text rather than its output. A false pass.
+- *zfs-health-check reports the degradation* -- the probe discarded the output.
+  It built `$( cmd 2>/dev/null | tr ... )` while callers passed
+  `zfs-health-check || true`, which the shell parses as
+  `cmd || { true | tr ... }`: a command exiting non-zero has its stdout thrown
+  away. A health check exits non-zero exactly when it has something to report,
+  so that probe was guaranteed blank in the one case it exists for. Now
+  `{ cmd ; } 2>&1`.
+
+### Not yet established
+
+- **`replace`.** The phase starts, but with disk0 still pulled and a blank
+  disk3 attached the guest sits in firmware without reaching a shell (a run of
+  dots on the console, no progress in two hours). Whether that is OVMF boot-order
+  behaviour in this emulator or something real is **unresolved** -- do not read
+  it either way.
+- **The whole `bios` matrix.** Never run.
+- **A clean re-run of `uefi`** with the two harness fixes in place.
 
 ## A VM-environment limitation worth knowing
 
