@@ -121,13 +121,19 @@ set timeout $cmd_timeout
 # prompt -- matching the echoed PROBE text itself proved unreliable here.
 proc probe {name cmd} {
     set timeout 300
-    send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
+    # { ...; } 2>&1 so the command's exit status cannot change what is
+    # captured. Writing this as "$cmd 2>/dev/null | tr ..." with a caller
+    # passing "cmd || true" parses as "cmd || { true | tr ... }": a command
+    # that exits non-zero has its output thrown away and the empty true
+    # branch captured instead. That silently blanked the zfs-health-check
+    # probe, because a health check naturally exits non-zero when unhealthy.
+    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )\r"
     wait_prompt
 }
 
 
 probe hostname       "hostname"
-probe systemstate    "systemctl is-system-running || true"
+probe systemstate    "systemctl is-system-running"
 probe poolstate      "zpool list -H -o name,health"
 probe poolhealthy    "zpool status -x zroot"
 probe members_online "zpool status zroot | grep -c ONLINE"
@@ -145,7 +151,7 @@ probe forceimport    "cat /proc/cmdline | tr ' ' '~'"
 # mounted at /boot is not the point, and hardcoding /boot made this assertion
 # read an empty directory whenever that particular mount failed.
 probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI /boot-fallback-*/EFI/BOOT/BOOTX64.EFI"
-probe health_check   "zfs-health-check || true"
+probe health_check   "zfs-health-check"
 
 send_log "\n\[step\] probes done\n"
 

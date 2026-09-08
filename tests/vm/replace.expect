@@ -146,7 +146,13 @@ send_log "\n\[step\] resilver settled\n"
 # prompt -- matching the echoed PROBE text itself proved unreliable here.
 proc probe {name cmd} {
     set timeout 300
-    send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
+    # { ...; } 2>&1 so the command's exit status cannot change what is
+    # captured. Writing this as "$cmd 2>/dev/null | tr ..." with a caller
+    # passing "cmd || true" parses as "cmd || { true | tr ... }": a command
+    # that exits non-zero has its output thrown away and the empty true
+    # branch captured instead. That silently blanked the zfs-health-check
+    # probe, because a health check naturally exits non-zero when unhealthy.
+    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )\r"
     wait_prompt
 }
 
