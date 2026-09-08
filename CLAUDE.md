@@ -158,10 +158,9 @@ systemd reaching `running` with no failed units, every mirror member's boot
 partition mounted, and the root pool importing with no force flag on the
 kernel command line.
 
-One assertion currently fails and the cause is not yet settled: a freshly
-installed machine reports `BOOT MIRROR: /boot-fallback-N does not match /boot`.
-Either the installer leaves the fallback ESPs incomplete or `zfs-health.nix`'s
-comparison is too strict. See `tests/vm/RESULTS.md`; do not paper over it.
+The suite is green: 71 checks, 0 failed, 1 skipped across both firmware modes.
+The skip is structural (BIOS has no ESP). `tests/vm/RESULTS.md` carries the
+verbatim output and the three defects the suite found on the way there.
 
 What remains out of reach: real hardware. The guest is emulated, so firmware
 quirks, NVMe/SATA controller behaviour, and anything timing-dependent on a

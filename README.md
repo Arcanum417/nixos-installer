@@ -315,16 +315,6 @@ routine run. Setup, knobs and troubleshooting: **[`tests/vm/README.md`](tests/vm
   (`boot.zfs.requestEncryptionCredentials` prompts in the initrd).
 - **`ALLOW_MIXED_SIZE=1` is not tested as thoroughly** as the identical-disk
   path. Prefer identical disks.
-- **A freshly installed machine reports its boot mirror as stale.** The VM
-  suite catches `zfs-health-check` emitting `BOOT MIRROR: /boot-fallback-1 does
-  not match /boot - stale bootloader copy` immediately after a successful
-  install. It is not yet known whether the installer really leaves the fallback
-  ESPs incomplete — which would matter, since booting off a survivor is the
-  point — or whether the health check's filename comparison is too strict and
-  every healthy machine warns on a 15-minute timer. Until it is resolved, treat
-  that particular warning on a brand-new machine as unexplained rather than
-  either safe or fatal. Details in
-  [`tests/vm/RESULTS.md`](tests/vm/RESULTS.md).
 - **The data pool is not covered by the VM suite.** `tests/vm-boot.sh` drives
   `install-me.sh` with the "skip" option, so creating and importing an
   encrypted `zdata` is still only evaluated, never booted.

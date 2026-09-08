@@ -9,8 +9,8 @@ NixOS `nixos-25.05` minimal ISO (x86_64), guest emulated under QEMU TCG.
 
 ## Where it stands
 
-Latest full run, both firmware modes: **44 checks, 2 failed, 2 skipped.** The
-`uefi` half is reproduced verbatim below; all four phases ran.
+**Green. 71 checks, 0 failed, 1 skipped** — both firmware modes, all four
+phases, one clean run. Verbatim:
 
 ```
 assets
@@ -34,11 +34,7 @@ uefi
   ok   uefi: layout json records 3 disks
   ok   uefi: systemd reports the system running
   ok   uefi: no failed units
-  FAIL uefi: zfs-health-check reports healthy
-       [BOOT MIRROR: /boot-fallback-1 does not match /boot - stale bootloader
-       copy, run nixos-rebuild boot~BOOT MIRROR: /boot-fallback-2 does not
-       match /boot - stale bootloader copy, run nixos-rebuild boot]
-       lacks [healthy]
+  ok   uefi: zfs-health-check reports healthy
   ok   uefi: no vdev is DEGRADED
   ok   uefi: every mirror member's boot partition is mounted
   ok   uefi: root pool imported without a force flag
@@ -57,52 +53,78 @@ uefi
   ok   uefi: pool is ONLINE again, not just not-failing
   ok   uefi: no vdev left DEGRADED after the resilver
   ok   uefi: hostid unchanged by the replace
+bios
+  ok   bios: guest serial port opens
+  ok   bios: install-me.sh completes on a 3-disk mirror
+  ok   bios: hostid was set before any pool existed
+  ok   bios: pool is a mirror
+  ok   bios: pools exported for a clean first import
+  ok   bios: installed system boots off the mirror
+  ok   bios: hostname from unique.nix
+  ok   bios: hostid survived the install
+  ok   bios: root pool is ONLINE
+  ok   bios: pool reports healthy
+  ok   bios: root is the zfs dataset
+  ok   bios: layout json matches the firmware
+  ok   bios: layout json records 3 disks
+  ok   bios: systemd reports the system running
+  ok   bios: no failed units
+  ok   bios: zfs-health-check reports healthy
+  ok   bios: no vdev is DEGRADED
+  ok   bios: every mirror member's boot partition is mounted
+  ok   bios: root pool imported without a force flag
+  skip bios: removable EFI path (BIOS mode has no ESP)
+  ok   bios: boots with the first mirror member pulled
+  ok   bios: pool notices the missing disk
+  ok   bios: pool is DEGRADED but usable
+  ok   bios: root still mounted from the pool
+  ok   bios: a missing /boot did not block startup (nofail)
+  ok   bios: zfs-health-check reports the degradation
+  ok   bios: replace-boot-disk.sh resilvers onto a new disk
+  ok   bios: GUIDs randomised on the replacement
+  ok   bios: bootloader reinstalled onto the new disk
+  ok   bios: pool healthy again after resilver
+  ok   bios: layout json now names the new disk
+  ok   bios: pool is ONLINE again, not just not-failing
+  ok   bios: no vdev left DEGRADED after the resilver
+  ok   bios: hostid unchanged by the replace
+vm-boot: 71 checks, 0 failed, 1 skipped
 ```
+
+The single skip is structural: BIOS mode has no ESP, so there is no removable
+EFI path to check.
 
 **What this establishes.** A machine installed onto a 3-way ZFS root mirror
-boots; it still boots with the first mirror member pulled -- the one whose ESP
-is mounted at `/boot` -- coming up DEGRADED with `/` intact and the health
-check saying so; and `replace-boot-disk.sh` then brings it back to a fully
-ONLINE pool on a new disk, with the hostId undisturbed. `bios` has separately
-completed all four phases in an earlier run.
+boots, in both UEFI and BIOS mode. It comes up with the pool ONLINE, systemd at
+`running` with no failed units, every mirror member's boot partition mounted,
+the root pool imported with no force flag on the kernel command line, and the
+health check quiet. Pull the first mirror member — in UEFI mode that is the
+disk whose ESP is mounted at `/boot` — and it still boots: DEGRADED, `/`
+intact, `nofail` keeping the missing `/boot` from blocking startup, and
+`zfs-health-check` reporting the degradation. Then `replace-boot-disk.sh`
+partitions a blank replacement, randomises its GUIDs, resilvers, reinstalls the
+bootloader on every member, and the pool returns to fully ONLINE with the
+hostId undisturbed.
 
-### The one open failure
+Getting here took several runs, and the failures along the way were worth more
+than the green: three real defects, listed below.
 
-`zfs-health-check reports healthy` fails on a **freshly installed** machine,
-which is a genuine finding rather than a flaky assertion:
+### Still not established
 
-```
-BOOT MIRROR: /boot-fallback-1 does not match /boot - stale bootloader copy
-BOOT MIRROR: /boot-fallback-2 does not match /boot - stale bootloader copy
-```
+None of these are failures; they are the honest edges of what this suite
+covers.
 
-`disk-layout.nix` sets `copyKernels = true` and maps `mirroredBoots` over every
-boot disk, so each fallback ESP should be complete the moment the install
-finishes. So one of two things is wrong, and which one is not yet known:
-
-- the installer really does leave the fallback ESPs short, which matters --
-  booting off a survivor is the entire premise of this repo; or
-- `zfs-health.nix`'s filename-set comparison counts a file it should ignore, in
-  which case every healthy machine cries wolf on a 15-minute timer and
-  operators learn to ignore the one warning that matters.
-
-A `bootdiff` probe was added to report the actual filename difference and
-settle it. It has not yet produced data: the run that would have carried it
-lost its `bios` boot phase to the serial-drop bug below.
-
-### Not yet established
-
-- **Whether 8 vCPUs help.** The count was raised from 4 after measuring the
-  GRUB build saturating four threads, which justifies it for the compile. Its
-  effect on the sequential stages (partitioning, pool creation) is
-  **unmeasured**, and the comparison logs from the 4-vCPU runs were deleted, so
-  it cannot be settled from what is on disk now.
+- **Whether 8 vCPUs help the sequential stages.** The count was raised from 4
+  after measuring the GRUB build saturating four threads, which justifies it
+  for the compile. Its effect on partitioning, pool creation and the channel
+  copy is **unmeasured**.
 - **by-id stability across reboots.** The by-id defect below was found here, so
-  the mechanism is understood, but a dedicated test that installs, reboots
-  several times and asserts the recorded paths still resolve has not been
-  written.
+  the mechanism is understood, but a test that installs, reboots several times
+  and asserts the recorded paths still resolve has not been written.
 - **The data pool.** `install-me.sh` is driven with the data pool skipped, so
   encrypted-pool creation and import remain evaluation-only.
+- **Real hardware.** The guest is emulated. Firmware quirks, real controller
+  behaviour and anything timing-dependent are out of reach by construction.
 
 ## The `_1` suffix: retracted, and what it really was
 
@@ -168,6 +190,36 @@ paths. Both are covered in `tests/nix-eval.sh`'s sibling suite
 `tests/lib-unit.sh`, including both `udevadm` orderings, since this reproduces
 with a fake `udevadm` and needs no VM at all. That is the pattern to follow:
 **once a VM finds something, push the regression test down into CI.**
+
+**Every healthy machine reported a stale bootloader copy.** `zfs-health.nix`
+compares the set of filenames on each boot mount, and a freshly installed
+machine failed that comparison immediately, on a 15-minute timer:
+
+```
+BOOT MIRROR: /boot-fallback-1 does not match /boot - stale bootloader copy
+```
+
+A `bootdiff` probe was added rather than guessing, and the difference turned out
+to be a single file:
+
+```
+339d338
+< memtest.bin
+```
+
+`memtest.bin` comes from `boot.loader.grub.extraFiles` (enabled by
+`memtest86.enable` in `disk-layout.nix`) and a fresh install leaves it on
+`/boot` only. GRUB does not need it to boot anything, so counting it achieved
+nothing except to make a good machine cry wolf — and a check that fires on a
+healthy machine is ignored on the one occasion it is right. Excluded, for the
+same reason `grub.cfg` and `grubenv` already were.
+
+Worth recording what this was *not*, because the first hypothesis was that the
+installer left the fallback ESPs incomplete. It does not:
+`nixpkgs`' `grub.nix` runs `install-grub.pl` once per `mirroredBoots` entry with
+its own `bootPath`, so every ESP gets its own `grub/`, `kernels/` and `EFI/`.
+Reading that source settled the question before the VM data arrived and agreed
+with it.
 
 **`utm_reload` hung indefinitely.** `osascript -e 'tell application "UTM" to
 quit'` has no timeout, so with UTM busy the harness deadlocked on its own
