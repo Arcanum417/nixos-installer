@@ -166,10 +166,19 @@ set answers ""
 for {set i 1} {$i <= $ndisks} {incr i} { append answers "$i\\n" }
 append answers "d\\n3\\nDESTROY\\ny\\n"
 
-# --no-channel-copy: see the NIXOS_INSTALL_ARGS comment in install-me.sh.
-# Copying the channel writes tens of thousands of small files into the new
-# pool and dominated the run; it changes nothing this suite asserts.
-send -s "cd /root/repo && printf '$answers' | NIXOS_INSTALL_ARGS=--no-channel-copy ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
+# The channel copy is left ON, deliberately, even though it is the slowest
+# single step of the install.
+#
+# Skipping it with --no-channel-copy was tried and broke the replace phase:
+# replace-boot-disk.sh ends in `nixos-rebuild boot --install-bootloader`, and
+# without a channel that dies with
+#
+#     error: file 'nixpkgs/nixos' was not found in the Nix search path
+#
+# which is the whole point of the phase. install-me.sh keeps the
+# NIXOS_INSTALL_ARGS hook for anyone who wants it, but this suite must not use
+# it: a recovery tool that cannot rebuild is not the thing under test.
+send -s "cd /root/repo && printf '$answers' | ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
 
 set timeout $install_timeout
 

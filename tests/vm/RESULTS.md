@@ -147,10 +147,13 @@ measured and changed:
 - **Documentation is not in the binary cache.** The NixOS manual and the man
   cache are generated per configuration, so they were the only large
   derivations being *compiled* inside the emulator. Disabled in the fixture.
-- **The channel copy is the single slowest step.** `nixos-install` writes the
-  whole nixpkgs channel -- tens of thousands of small files -- into a fresh ZFS
-  pool. `install-me.sh` gained an opt-in `NIXOS_INSTALL_ARGS` hook so the suite
-  passes `--no-channel-copy`; real installs are unchanged.
+- **The channel copy is the single slowest step, and reverted.** Skipping it
+  with `--no-channel-copy` broke the `replace` phase outright:
+  `replace-boot-disk.sh` ends in `nixos-rebuild boot --install-bootloader`,
+  which without a channel dies with `error: file 'nixpkgs/nixos' was not found
+  in the Nix search path`. A self-inflicted failure from optimising the install
+  without thinking about what the later phases need. The hook stays in
+  `install-me.sh`; the suite does not use it.
 - **More vCPUs do not help.** See the note in `lib-utm.sh`: the guest workload
   is serial, so multi-threaded TCG has nothing to spread.
 
