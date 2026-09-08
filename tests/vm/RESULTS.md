@@ -82,7 +82,18 @@ in the committed code but **have not yet been re-verified by a run**:
   through.
 
   The drivers now type the text, sleep so fish settles, then send Return on
-  its own. **Not yet confirmed by a run.**
+  its own. **This did not fix it.** A run with that change in place reached
+  the same point: the step marker is written, the command is sent, and the
+  console then shows only further systemd boot messages with no script output
+  at all. So the trailing-`\r` theory is at best incomplete.
+
+  What is still unexplained is that the prompt pattern matches while the guest
+  is evidently still booting -- systemd keeps printing unit messages after the
+  match. The OSC 133 marker is very likely emitted by the getty before the
+  shell is interactive, so the command is typed into something that is not yet
+  reading. If so the fix is to wait for a *settled* prompt (for example, echo
+  a token and require it back) rather than the first 133;A. That is the next
+  thing to try; it has not been tried.
 
   Two earlier notes in this file were wrong and are corrected: the guest does
   not "sit in firmware" (it boots), and the hang was not `zpool status`
