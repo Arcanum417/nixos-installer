@@ -236,8 +236,17 @@ build_repo_iso () { # build_repo_iso REPO_ROOT OUT_ISO
     write_test_unique_nix "$stage/unique.nix"
 
     rm -f "$out"
-    hdiutil makehybrid -quiet -iso -joliet -default-volume-name NIXINST \
-        -o "$out" "$stage" || { rm -rf "$stage"; return 1; }
+    # hdiutil on macOS, xorriso elsewhere. The volume name matters: install-me.sh
+    # is handed the mount by label, so both branches must set NIXINST.
+    if command -v hdiutil >/dev/null; then
+        hdiutil makehybrid -quiet -iso -joliet -default-volume-name NIXINST \
+            -o "$out" "$stage" || { rm -rf "$stage"; return 1; }
+    elif command -v xorriso >/dev/null; then
+        xorriso -as mkisofs -quiet -J -rational-rock -V NIXINST \
+            -o "$out" "$stage" >/dev/null 2>&1 || { rm -rf "$stage"; return 1; }
+    else
+        rm -rf "$stage"; return 1
+    fi
     rm -rf "$stage"
     [[ -s $out ]]
 }

@@ -158,7 +158,15 @@ systemd reaching `running` with no failed units, every mirror member's boot
 partition mounted, and the root pool importing with no force flag on the
 kernel command line.
 
-The suite is green: 71 checks, 0 failed, 1 skipped across both firmware modes.
+It has two interchangeable backends behind a thirteen-function contract
+(documented at the top of `tests/vm/lib-utm.sh`): local UTM on macOS, and a
+Proxmox VE node (`tests/vm/lib-proxmox.sh`, `tests/vm/README-proxmox.md`). The
+Proxmox one exists because an x86_64 node runs the guest under KVM rather than
+TCG. It is written and shellcheck-clean but has **not yet been run against a
+real node** -- say so rather than implying it is proven.
+
+The suite is green on UTM: 71 checks, 0 failed, 1 skipped across both firmware
+modes.
 The skip is structural (BIOS has no ESP). `tests/vm/RESULTS.md` carries the
 verbatim output and the three defects the suite found on the way there.
 

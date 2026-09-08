@@ -8,9 +8,20 @@ surviving disk, and the pool importing with `boot.zfs.forceImportRoot = false`
 are all boot-time facts. This suite is the only thing in the repo that checks
 them.
 
-It runs on macOS against UTM, which is why it is not in CI: the GitHub runners
-are Linux and cannot usefully nest a hypervisor. CI covers what CI can cover;
-this covers the rest.
+It is not in CI: the GitHub runners are Linux and cannot usefully nest a
+hypervisor. CI covers what CI can cover; this covers the rest.
+
+Two backends drive it, and they share everything except the hypervisor calls —
+the phases, assertions, probes and expect drivers are the same code:
+
+- **UTM** on macOS, the default here. Documented in this file.
+- **Proxmox VE**, for an x86_64 node where the guest runs under KVM instead of
+  TCG and the same run takes minutes rather than hours. See
+  [`README-proxmox.md`](README-proxmox.md).
+
+The contract between the suite and a backend is thirteen functions, documented
+at the top of `lib-utm.sh`. The suite prints which backend it chose as its
+first line.
 
 ## What it asserts
 

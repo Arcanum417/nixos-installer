@@ -4,8 +4,18 @@
 # proves the partitioning is right, but neither proves a machine built this way
 # starts. That needs firmware, a bootloader and an initrd, so it needs a VM.
 #
-# Runs on macOS with UTM, which is why it is not in CI (the GitHub runners are
-# Linux and cannot nest a hypervisor usefully). The guest is x86_64 because
+# Not in CI: the GitHub runners are Linux and cannot nest a hypervisor usefully.
+# Two backends drive it instead, and the phases and assertions below are shared
+# between them -- see the contract in vm/lib-utm.sh:
+#
+#   utm       (default on macOS) a local UTM VM. The host is arm64 and the guest
+#             is x86_64, so QEMU emulates under TCG and a full run takes hours.
+#   proxmox   (VM_BACKEND=proxmox, or automatic when PVE_HOST is set) a VM on a
+#             Proxmox VE node. On an x86_64 node the guest runs under KVM, which
+#             is the whole reason to prefer it. See vm/lib-proxmox.sh for the
+#             configuration it needs.
+#
+# The guest is x86_64 because
 # that is what this repo targets: BOOTX64.EFI and the EF02 BIOS boot partition
 # are x86-only, and an aarch64 guest could not test the BIOS path at all. The
 # host here is arm64, so QEMU runs in TCG emulation and a full install takes
@@ -24,18 +34,41 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 # shellcheck source=assert.sh
 source "$HERE/assert.sh"
-# shellcheck source=vm/lib-utm.sh
-source "$HERE/vm/lib-utm.sh"
+# Pick a backend before sourcing one: both define the same function names, so
+# sourcing both would leave whichever came last in charge.
+VM_BACKEND=${VM_BACKEND:-$([[ -n ${PVE_HOST-} ]] && echo proxmox || echo utm)}
+case $VM_BACKEND in
+    utm)     # shellcheck source=vm/lib-utm.sh
+             source "$HERE/vm/lib-utm.sh" ;;
+    proxmox) # shellcheck source=vm/lib-proxmox.sh
+             source "$HERE/vm/lib-proxmox.sh" ;;
+    *)       echo "unknown VM_BACKEND '$VM_BACKEND' (utm|proxmox)"; exit 2 ;;
+esac
 # shellcheck source=vm/lib-assets.sh
 source "$HERE/vm/lib-assets.sh"
 
 # --------------------------------------------------------------- environment --
 
-[[ $(uname -s) == Darwin ]] || { echo "vm-boot.sh needs macOS + UTM"; exit 77; }
-utm_available || { echo "UTM not installed at $UTM_APP"; exit 77; }
-for c in expect nc jq plutil mkfile hdiutil osascript curl; do
+# Tools the shared parts need, plus whatever the chosen backend adds.
+REQUIRED_TOOLS=(expect jq curl)
+case $VM_BACKEND in
+    utm)     REQUIRED_TOOLS+=(nc plutil mkfile hdiutil osascript) ;;
+    proxmox) REQUIRED_TOOLS+=(ssh) ;;
+esac
+for c in "${REQUIRED_TOOLS[@]}"; do
     command -v "$c" >/dev/null || { echo "missing $c"; exit 77; }
 done
+
+# Each backend decides for itself whether it can run here, and a backend that
+# cannot is a skip (77), not a failure -- the suite is opt-in either way.
+utm_available || {
+    case $VM_BACKEND in
+        utm)     echo "UTM not usable (need macOS and $UTM_APP)" ;;
+        proxmox) echo "Proxmox not usable: set PVE_HOST, PVE_NODE and PVE_TOKEN_FILE, and check the node answers" ;;
+    esac
+    exit 77
+}
+echo "backend: $VM_BACKEND"
 
 DISK_GB=${DISK_GB:-8}
 NDISKS=${NDISKS:-3}
@@ -84,6 +117,29 @@ else
     CAN_INSTALL=0
     skip "installer ISO repacked with a serial console" \
          "needs xorriso (nix-shell -p xorriso); without it the installer has no console to drive"
+fi
+
+# The Proxmox backend boots the guest from ISOs held on the node's own storage,
+# so both have to get there. Uploaded by content hash of the name: the repo ISO
+# is rebuilt every run and must overwrite, while the installer ISO is 1.7 GB and
+# is only sent once.
+if [[ $VM_BACKEND == proxmox ]]; then
+    if pve_iso_present "$(basename "$BOOT_ISO")"; then
+        _pass "installer ISO already on $PVE_NODE"
+    elif pve_upload_iso "$BOOT_ISO"; then
+        _pass "installer ISO uploaded to $PVE_NODE"
+    else
+        _fail "installer ISO uploaded to $PVE_NODE" "upload failed"
+        summary "vm-boot"; exit 1
+    fi
+
+    # Always re-upload this one; it carries the repo under test.
+    if pve_upload_iso "$REPO_ISO"; then
+        _pass "repo ISO uploaded to $PVE_NODE"
+    else
+        _fail "repo ISO uploaded to $PVE_NODE" "upload failed"
+        summary "vm-boot"; exit 1
+    fi
 fi
 
 # --------------------------------------------------------------- helpers -----
@@ -145,7 +201,7 @@ phase_install () { # phase_install NAME FIRMWARE PORT
     utm_reload
     vm_start "$name"
 
-    if ! vm_serial_ready "$port" 120; then
+    if ! vm_serial_ready "$name" "$port" 120; then
         _fail "$firmware: guest serial port opens" "nothing listening on 127.0.0.1:$port"
         PHASE_OK=0; return
     fi
@@ -177,7 +233,7 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
     vm_boot_from_disk "$name"
     utm_reload
     vm_start "$name"
-    vm_serial_ready "$port" 120 || { _fail "$firmware: boot serial" "no serial"; PHASE_OK=0; return; }
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: boot serial" "no serial"; PHASE_OK=0; return; }
 
     if run_expect postboot.expect "$log" "$port"; then
         _pass "$firmware: installed system boots off the mirror"
@@ -246,7 +302,7 @@ phase_degraded () { # phase_degraded NAME FIRMWARE PORT
     vm_remove_drive "$name" disk0
     utm_reload
     vm_start "$name"
-    vm_serial_ready "$port" 120 || { _fail "$firmware: degraded serial" "no serial"; PHASE_OK=0; return; }
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: degraded serial" "no serial"; PHASE_OK=0; return; }
 
     if run_expect postboot.expect "$log" "$port"; then
         _pass "$firmware: boots with the first mirror member pulled"
@@ -283,7 +339,7 @@ phase_replace () { # phase_replace NAME FIRMWARE PORT
     vm_readd_drive "$name" disk3
     utm_reload
     vm_start "$name"
-    vm_serial_ready "$port" 120 || { _fail "$firmware: replace serial" "no serial"; PHASE_OK=0; return; }
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: replace serial" "no serial"; PHASE_OK=0; return; }
 
     if run_expect replace.expect "$log" "$port"; then
         _pass "$firmware: replace-boot-disk.sh resilvers onto a new disk"

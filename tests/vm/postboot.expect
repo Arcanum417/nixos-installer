@@ -51,7 +51,18 @@ proc serial_connect {} {
     # targets expect's own stdout and silently kills this script's output.
     if {$connected} { catch {close}; catch {wait} }
     sleep 2
-    spawn nc 127.0.0.1 $port
+    # How to reach the guest's serial console is backend-specific, so the
+    # backend supplies the command and this driver stays ignorant of it.
+    # UTM exposes a listening TCP socket, hence the nc default. Proxmox
+    # publishes a unix socket on the node instead, so its backend sets
+    # VM_SERIAL_CMD to an ssh+socat invocation. `-T` and a bare `socat -`
+    # matter there: a remote pty would translate \n to \r\n and corrupt the
+    # transcript.
+    if {[info exists env(VM_SERIAL_CMD)] && $env(VM_SERIAL_CMD) ne ""} {
+        eval spawn [split $env(VM_SERIAL_CMD)]
+    } else {
+        spawn nc 127.0.0.1 $port
+    }
     set connected 1
 }
 proc reconnect_or_bail {} {
