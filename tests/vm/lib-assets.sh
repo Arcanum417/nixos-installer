@@ -70,6 +70,14 @@ write_test_unique_nix () { # write_test_unique_nix PATH
   # use; that turns a pass into a timeout.
   networking.useDHCP = false;
   systemd.services.NetworkManager-wait-online.enable = false;
+
+  # Documentation is the single most expensive thing in this closure and the
+  # least relevant to what is being tested. The NixOS manual and the man cache
+  # are not in the binary cache -- they are generated per configuration -- so
+  # under TCG emulation they are built from source and dominate the run. None
+  # of it affects partitioning, the pool, the bootloader or the boot.
+  documentation.nixos.enable = false;
+  documentation.man.generateCaches = false;
 }
 EOF
 }

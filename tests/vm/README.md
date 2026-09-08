@@ -147,7 +147,10 @@ the kernel. That is one expected disconnect per boot, and every expect driver
 reconnects through it rather than failing.
 
 The `unique.nix` the tests generate is the only thing that differs from a real
-install: it adds the serial console and autologin, and disables DHCP so a
-booted machine does not sit waiting on a NIC the test never uses. Everything
-else — `configuration.nix`, `disk-layout.nix`, `zfs-health.nix`, the installer
-itself — is exactly what ships.
+install. It adds the serial console and autologin, disables DHCP so a booted
+machine does not sit waiting on a NIC the test never uses, and turns off the
+NixOS manual and the man cache — those are generated per configuration rather
+than fetched from the binary cache, so under emulation they are built from
+source and dominate the run, while affecting nothing this suite asserts.
+Everything else — `configuration.nix`, `disk-layout.nix`, `zfs-health.nix`, the
+installer itself — is exactly what ships.
