@@ -112,7 +112,11 @@ proc enter_bash {} {
             -re {RDY-4b91>} { return 1 }
             timeout { }
         }
-        send -s "PS1='RDY-4b91> '"
+        # Bracketed paste wraps typed input in escape sequences and readline
+        # echoes them back, which is noise at best and, over a slow serial
+        # line, another chance for a command to be redrawn into something
+        # else. Turn it off along with any line editing.
+        send -s "PS1='RDY-4b91> '; bind 'set enable-bracketed-paste off' 2>/dev/null; set +o emacs 2>/dev/null"
         sleep 1
         send "\r"
         expect {

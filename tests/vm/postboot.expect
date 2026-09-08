@@ -97,7 +97,11 @@ proc enter_bash {} {
         }
         # bash's own default prompt is not the marker we want to key on, so set
         # it explicitly once we are in.
-        send -s "PS1='RDY-4b91> '"
+        # Bracketed paste wraps typed input in escape sequences and readline
+        # echoes them back, which is noise at best and, over a slow serial
+        # line, another chance for a command to be redrawn into something
+        # else. Turn it off along with any line editing.
+        send -s "PS1='RDY-4b91> '; bind 'set enable-bracketed-paste off' 2>/dev/null; set +o emacs 2>/dev/null"
         sleep 1
         send "\r"
         expect {
@@ -244,6 +248,13 @@ probe failedunits    "systemctl --failed --no-legend --plain | tr -s ' '"
 # read an empty directory whenever that particular mount failed.
 probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI /boot-fallback-*/EFI/BOOT/BOOTX64.EFI"
 probe health_check   "zfs-health-check"
+
+# Diagnostic, not an assertion: which filenames actually differ between the
+# first ESP and a fallback. zfs-health.nix compares the set of filenames on
+# each boot mount and reported a freshly installed machine as carrying a stale
+# bootloader copy; this says whether the installer really left a fallback
+# incomplete or whether the check is counting a file it should ignore.
+probe bootdiff "diff <(find /boot -type f -printf '%P\\n' | sort) <(find /boot-fallback-1 -type f -printf '%P\\n' | sort) | head -20"
 
 send_log "\n\[step\] probes done\n"
 
