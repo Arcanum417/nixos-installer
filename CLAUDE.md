@@ -141,10 +141,27 @@ defects: the ESP `grep -v` aborting under `pipefail` on an empty filesystem,
 and `select_disks` renumbering its menu between picks (which, in a script that
 runs `sgdisk --zap-all` on your choice, wipes the wrong disk).
 
+The unit suite also carries the regression tests for the two defects the VM
+suite found — `set_hostid` writing through `/etc/hostid`'s symlink into the
+read-only store, and `by_id_path` picking nondeterministically between an NVMe
+disk's two by-id links, which let `select_disks` offer a live mirror member as
+a replacement disk. That is the rule to follow: **a VM run is the only way to
+discover that class of bug and the worst way to regression-test it.** Once
+found, push the test down into CI.
+
 Booting used to be out of reach; `tests/vm-boot.sh` now covers it, one VM per
 firmware mode: GRUB landing correctly, the removable path being found on a
 surviving disk after the first is pulled, the machine coming up degraded with
-`/boot` missing, and a replacement disk resilvering back to healthy.
+`/boot` missing, and a replacement disk resilvering back to a fully ONLINE pool
+with the hostId undisturbed. It also asserts the quieter boot-time facts —
+systemd reaching `running` with no failed units, every mirror member's boot
+partition mounted, and the root pool importing with no force flag on the
+kernel command line.
+
+One assertion currently fails and the cause is not yet settled: a freshly
+installed machine reports `BOOT MIRROR: /boot-fallback-N does not match /boot`.
+Either the installer leaves the fallback ESPs incomplete or `zfs-health.nix`'s
+comparison is too strict. See `tests/vm/RESULTS.md`; do not paper over it.
 
 What remains out of reach: real hardware. The guest is emulated, so firmware
 quirks, NVMe/SATA controller behaviour, and anything timing-dependent on a

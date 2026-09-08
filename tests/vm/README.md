@@ -20,9 +20,9 @@ then progressively broken:
 | Phase | What it proves |
 |---|---|
 | `install` | `install-me.sh` completes unattended on an N-way mirror; the hostId is set *before* any pool exists; the pool really is a `mirror-0`; the pools are exported so the first boot imports cleanly. |
-| `boot` | The installed system boots off the mirror to a shell. Hostname and hostId survived, the root pool is `ONLINE`, `/` is the ZFS dataset, `disk-layout.json` matches the firmware, and (UEFI) GRUB is at `EFI/BOOT/BOOTX64.EFI`. |
+| `boot` | The installed system boots off the mirror to a shell. Hostname and hostId survived, the root pool is `ONLINE` with no DEGRADED vdev, `/` is the ZFS dataset, `disk-layout.json` matches the firmware, systemd reports the system `running` with no failed units, every mirror member's boot partition is mounted, the pool imported with no force flag on the kernel command line, `zfs-health-check` is quiet, and (UEFI) GRUB is at `EFI/BOOT/BOOTX64.EFI`. |
 | `degraded` | With the **first** mirror member pulled — in UEFI mode that is the disk whose ESP is mounted at `/boot` — the machine still boots. The pool reports `DEGRADED`, `/` is still mounted, the missing `/boot` did not block startup (this is what `nofail` is for), and `zfs-health-check` notices. |
-| `replace` | `/etc/nixos/replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, and reinstalls the bootloader; the pool returns to healthy. |
+| `replace` | `/etc/nixos/replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, and reinstalls the bootloader; the pool returns to fully `ONLINE` with no DEGRADED vdev, and the hostId — which is stamped into the pool labels — is undisturbed. |
 
 Both `uefi` and `bios` run the whole set. That matters: `BOOTX64.EFI` and the
 `EF02` BIOS boot partition are the two halves of the repo's boot support, and
@@ -61,7 +61,7 @@ Phases are **sequential and stateful** — `boot` needs the disks `install` left
 previous run left the VM in place (`VM_KEEP=1`).
 
 Useful knobs: `DISK_GB` (default 8), `NDISKS` (default 3), `VM_MEM_MB` (8192),
-`VM_CORES` (4), `NIXOS_CHANNEL` (`nixos-25.05`).
+`VM_CORES` (8), `NIXOS_CHANNEL` (`nixos-25.05`).
 
 ### Budget the time
 
@@ -104,8 +104,9 @@ Two things to know before trying to tune this further:
 - **Long silences are normal.** `copying channel...` and the closure copy print
   nothing for a long time while working, so a static transcript is not a hang.
 
-Whether UTM's `ForceMulticore` helps is unmeasured; the harness leaves it off
-with 4 vCPUs because that is the configuration installs have completed on.
+One honest caveat: 8 vCPUs is justified by the GRUB compile, which was
+measured. Its effect on the *sequential* stages — partitioning, pool creation,
+the channel copy — is unmeasured.
 
 ## When something fails
 
@@ -171,7 +172,18 @@ so it stays bootable in both firmware modes — replacing `grub.cfg` and
 One consequence worth knowing when reading a transcript: UTM drops the serial
 TCP client when the guest reinitialises the UART, which GRUB does on its way to
 the kernel. That is one expected disconnect per boot, and every expect driver
-reconnects through it rather than failing.
+reconnects through it rather than failing. Note that `send` on a dropped
+connection *raises* in Tcl rather than returning an error, so every direct
+`send` is wrapped in `catch` — a drop landing inside the shell handshake used
+to kill a phase that had booted perfectly well.
+
+The drivers also hand the session to bash before doing anything scripted.
+`configuration.nix` gives root fish, and fish repaints the input line on every
+keystroke and installs a command-not-found handler; over a slow emulated serial
+console that turns `echo PROBE:...` into `eecho PROBE:...`, and the probe never
+runs. Landing in fish first still proves the login shell works, so the drivers
+do that and then `exec bash --noprofile --norc` with line editing off. See
+`RESULTS.md` for how much time that cost to find.
 
 The `unique.nix` the tests generate is the only thing that differs from a real
 install. It adds the serial console and autologin, disables DHCP so a booted

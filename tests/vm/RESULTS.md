@@ -9,11 +9,13 @@ NixOS `nixos-25.05` minimal ISO (x86_64), guest emulated under QEMU TCG.
 
 ## Where it stands
 
-A full `uefi` run has been executed. Results, verbatim:
+Latest full run, both firmware modes: **44 checks, 2 failed, 2 skipped.** The
+`uefi` half is reproduced verbatim below; all four phases ran.
 
 ```
 assets
   ok   installer ISO cached (1.7G)
+  ok   generated configuration evaluates
   ok   repo ISO built
   ok   installer ISO repacked with a serial console as the default entry
 uefi
@@ -30,89 +32,98 @@ uefi
   ok   uefi: root is the zfs dataset
   ok   uefi: layout json matches the firmware
   ok   uefi: layout json records 3 disks
-  FAIL uefi: GRUB is at the removable path
+  ok   uefi: systemd reports the system running
+  ok   uefi: no failed units
+  FAIL uefi: zfs-health-check reports healthy
+       [BOOT MIRROR: /boot-fallback-1 does not match /boot - stale bootloader
+       copy, run nixos-rebuild boot~BOOT MIRROR: /boot-fallback-2 does not
+       match /boot - stale bootloader copy, run nixos-rebuild boot]
+       lacks [healthy]
+  ok   uefi: no vdev is DEGRADED
+  ok   uefi: every mirror member's boot partition is mounted
+  ok   uefi: root pool imported without a force flag
+  ok   uefi: GRUB is at the removable path
   ok   uefi: boots with the first mirror member pulled
   ok   uefi: pool notices the missing disk
   ok   uefi: pool is DEGRADED but usable
   ok   uefi: root still mounted from the pool
   ok   uefi: a missing /boot did not block startup (nofail)
-  FAIL uefi: zfs-health-check reports the degradation
+  ok   uefi: zfs-health-check reports the degradation
+  ok   uefi: replace-boot-disk.sh resilvers onto a new disk
+  ok   uefi: GUIDs randomised on the replacement
+  ok   uefi: bootloader reinstalled onto the new disk
+  ok   uefi: pool healthy again after resilver
+  ok   uefi: layout json now names the new disk
+  ok   uefi: pool is ONLINE again, not just not-failing
+  ok   uefi: no vdev left DEGRADED after the resilver
+  ok   uefi: hostid unchanged by the replace
 ```
 
-**The thing this suite exists to prove works.** A machine installed onto a
-3-way ZFS root mirror boots, and it still boots with the first mirror member --
-the one whose ESP is mounted at `/boot` -- pulled, coming up DEGRADED but
-usable with `/` intact.
+**What this establishes.** A machine installed onto a 3-way ZFS root mirror
+boots; it still boots with the first mirror member pulled -- the one whose ESP
+is mounted at `/boot` -- coming up DEGRADED with `/` intact and the health
+check saying so; and `replace-boot-disk.sh` then brings it back to a fully
+ONLINE pool on a new disk, with the hostId undisturbed. `bios` has separately
+completed all four phases in an earlier run.
 
-Both failures were faults in the harness, not the installer, and both are fixed
-in the committed code but **have not yet been re-verified by a run**:
+### The one open failure
 
-- *GRUB is at the removable path* -- the probe looked only under `/boot`. See
-  the section below: that mount had failed, so it read an empty directory. It
-  now checks every ESP. Note this assertion was *passing* before the transcript
-  parser was fixed, because the greedy match was matching the echoed command
-  text rather than its output. A false pass.
-- *zfs-health-check reports the degradation* -- the probe discarded the output.
-  It built `$( cmd 2>/dev/null | tr ... )` while callers passed
-  `zfs-health-check || true`, which the shell parses as
-  `cmd || { true | tr ... }`: a command exiting non-zero has its stdout thrown
-  away. A health check exits non-zero exactly when it has something to report,
-  so that probe was guaranteed blank in the one case it exists for. Now
-  `{ cmd ; } 2>&1`.
+`zfs-health-check reports healthy` fails on a **freshly installed** machine,
+which is a genuine finding rather than a flaky assertion:
+
+```
+BOOT MIRROR: /boot-fallback-1 does not match /boot - stale bootloader copy
+BOOT MIRROR: /boot-fallback-2 does not match /boot - stale bootloader copy
+```
+
+`disk-layout.nix` sets `copyKernels = true` and maps `mirroredBoots` over every
+boot disk, so each fallback ESP should be complete the moment the install
+finishes. So one of two things is wrong, and which one is not yet known:
+
+- the installer really does leave the fallback ESPs short, which matters --
+  booting off a survivor is the entire premise of this repo; or
+- `zfs-health.nix`'s filename-set comparison counts a file it should ignore, in
+  which case every healthy machine cries wolf on a 15-minute timer and
+  operators learn to ignore the one warning that matters.
+
+A `bootdiff` probe was added to report the actual filename difference and
+settle it. It has not yet produced data: the run that would have carried it
+lost its `bios` boot phase to the serial-drop bug below.
 
 ### Not yet established
 
-- **`replace`.** Root cause found and fixed; the fix is **not yet verified by
-  a run** because each attempt costs hours.
+- **Whether 8 vCPUs help.** The count was raised from 4 after measuring the
+  GRUB build saturating four threads, which justifies it for the compile. Its
+  effect on the sequential stages (partitioning, pool creation) is
+  **unmeasured**, and the comparison logs from the 4-vCPU runs were deleted, so
+  it cannot be settled from what is on disk now.
+- **by-id stability across reboots.** The by-id defect below was found here, so
+  the mechanism is understood, but a dedicated test that installs, reboots
+  several times and asserts the recorded paths still resolve has not been
+  written.
+- **The data pool.** `install-me.sh` is driven with the data pool skipped, so
+  encrypted-pool creation and import remain evaluation-only.
 
-  The phase reached a shell, sent its command, and the script never produced a
-  line. The cause is that `configuration.nix` sets
+## The `_1` suffix: retracted, and what it really was
 
-  ```nix
-  users.users.root.shell = pkgs.fish;
-  ```
-
-  and **fish does not accept `$?`** -- it rejects the expression and tells you
-  to use `$status`. So `... | replace-boot-disk.sh; echo REPLACE-EXIT=$?` was
-  typed, submitted, and discarded by fish before the script ever ran. That is
-  exactly what the console showed: a command sitting on the prompt line and no
-  output. It also explains why the install phase was never affected -- that
-  runs on the ISO, under bash.
-
-  The command is now wrapped in `bash -c` so the pipeline, the quoting and
-  `$?` all mean what the script expects.
-
-  Two earlier theories in this file were wrong and are worth naming so they
-  are not retried: a trailing `\r` being eaten by fish's prompt redraw, and
-  the command being too long to submit. Neither was it. What isolated the real
-  cause was the readiness handshake -- once the shell provably echoed a token
-  back, "the shell is not listening" was ruled out and only "the shell
-  rejected the command" was left.
-
-  The lesson for anyone extending this suite: **the installer environment is
-  bash, the installed system is fish.** Anything sent to the installed system
-  should go through `bash -c`.
-
-- **The whole `bios` matrix.** Never run.
-- **A clean re-run of `uefi`** with the two harness fixes in place.
-
-## A VM-environment limitation worth knowing
-
-On the first boot after install, `/boot` did not mount:
+On the first boot after an early install, `/boot` did not mount:
 
 ```
 DEPEND] Dependency failed for /boot.
 DEPEND] Dependency failed for File System …/nvme-QEMU_NVMe_Ctrl_disk0_1-part1.
 ```
 
-Note the `_1`. udev appended a disambiguation suffix to that disk's by-id name
-when the installer recorded it, and the suffix did not come back the same way
-on the next boot, so the path in `disk-layout.json` no longer existed. That is
-QEMU's NVMe naming in this emulator, not a fault in the installer -- but it
-does mean **this suite cannot validate by-id stability across reboots**, which
-is worth remembering before trusting it on that point.
+An earlier version of this file called that `_1` suffix "QEMU's NVMe naming in
+this emulator, not a fault in the installer". **That was wrong**, and the
+correction is the most valuable thing this suite has produced. See the defects
+section below: the suffix is how udev names the namespace-scoped by-id link,
+every NVMe disk has one alongside the device-level link, and the installer was
+picking between the two nondeterministically.
 
-Two useful things fell out of it anyway:
+Do not dismiss a `_1` as emulator noise. It is reproducible on real NVMe
+hardware and it had a real consequence.
+
+Two useful things fell out of the incident anyway:
 
 - **`nofail` demonstrably works.** A mirror member's ESP failed to mount and
   the machine still booted to a shell with the pool ONLINE, which is exactly
@@ -124,7 +135,7 @@ Two useful things fell out of it anyway:
   /boot/EFI/BOOT/BOOTX64.EFI` rather than the command's output -- a false pass.
   It now checks every ESP, which is the actual invariant.
 
-## Two real defects these tests found
+## The real defects these tests found
 
 **`set_hostid` could not run on a NixOS ISO.** `/etc/hostid` there is a symlink
 into `/etc/static`, which lives in the read-only `/nix/store`, so both branches
@@ -132,6 +143,31 @@ of `set_hostid` were writing *through* it and dying with `fopen: Read-only file
 system`. Since the hostId must be stamped into the pool labels before any pool
 exists, the installer could not get past its first step on the medium it is
 designed for. Nothing short of a real ISO boot reproduces this.
+
+**A live mirror member was offered as a replacement disk.** This is the serious
+one, because `replace-boot-disk.sh` runs `sgdisk --zap-all` on the answer.
+
+An NVMe disk carries two by-id links of equal rank: the device-level
+`nvme-MODEL_SERIAL` and the namespace-scoped `nvme-MODEL_SERIAL_1`, both
+pointing at the same device. `by_id_path` ranked them equally and kept
+whichever `udevadm` happened to list first — and `udevadm` promises no order.
+So the pool was recorded as `nvme-QEMU_NVMe_Ctrl_disk2` at install time while a
+later scan returned `nvme-QEMU_NVMe_Ctrl_disk2_1` for that same disk.
+`select_disks` then decided "already spoken for" by string equality, did not
+match, and listed a live mirror member as a candidate. Only
+`assert_disks_free`, which compares *resolved* devices rather than names,
+stopped it.
+
+The nondeterminism is visible in the results: the same commit failed this way
+under `uefi` and passed under `bios`, because the two runs got the two links in
+different orders.
+
+Fixed at both layers — `by_id_path` breaks equal-rank ties deterministically,
+and `select_disks` compares disks with a `same_disk` helper that resolves both
+paths. Both are covered in `tests/nix-eval.sh`'s sibling suite
+`tests/lib-unit.sh`, including both `udevadm` orderings, since this reproduces
+with a fake `udevadm` and needs no VM at all. That is the pattern to follow:
+**once a VM finds something, push the regression test down into CI.**
 
 **`utm_reload` hung indefinitely.** `osascript -e 'tell application "UTM" to
 quit'` has no timeout, so with UTM busy the harness deadlocked on its own
@@ -141,11 +177,18 @@ instead; `utm_reload` now returns in 1.5s.
 
 ## How long a run takes, and what was done about it
 
-The guest is x86_64 on an arm64 host, so QEMU emulates. Three things were
-measured and changed:
+The guest is x86_64 on an arm64 host, so QEMU emulates. What was measured:
 
+- **The install compiles GRUB from source, and that dominates.** This is the
+  answer to "why does a run take so long", and it is not the harness's doing.
+  `disk-layout.nix` sets `boot.loader.grub.zfsSupport = true` — GRUB has to
+  read the pool to boot a ZFS root — which produces a derivation the binary
+  cache does not carry. So GRUB 2.12 is built inside the emulator, once per
+  firmware mode (the UEFI and BIOS builds differ in `efiSupport`, so they
+  cannot share). Installing this repo does this on real hardware too; it just
+  takes minutes there. Nothing can remove it.
 - **Documentation is not in the binary cache.** The NixOS manual and the man
-  cache are generated per configuration, so they were the only large
+  cache are generated per configuration, so they were the other large
   derivations being *compiled* inside the emulator. Disabled in the fixture.
 - **The channel copy is the single slowest step, and reverted.** Skipping it
   with `--no-channel-copy` broke the `replace` phase outright:
@@ -154,8 +197,17 @@ measured and changed:
   in the Nix search path`. A self-inflicted failure from optimising the install
   without thinking about what the later phases need. The hook stays in
   `install-me.sh`; the suite does not use it.
-- **More vCPUs do not help.** See the note in `lib-utm.sh`: the guest workload
-  is serial, so multi-threaded TCG has nothing to spread.
+- **vCPUs: 8, and the earlier claim here was wrong.** This file used to say
+  "more vCPUs do not help, the guest workload is serial". The GRUB build is not
+  serial: at 4 vCPUs, `QEMULauncher` measured ~400% — all four threads
+  saturated — on an 18-core host (12 performance) that was otherwise idle, so
+  the count was raised to 8. `nix` defaults `cores = 0`, so `make -j` follows
+  the vCPU count on its own and needs no installer flag, and `ForceMulticore`
+  is not the lever since the threads were already saturated without it.
+
+  Stated honestly: the effect of 8 vCPUs on the *sequential* stages
+  (partitioning, pool creation, the channel copy) is **unmeasured**. It is
+  justified by the compile alone.
 
 Even so, an install is hours of wall clock, and the remaining phases and the
 bios matrix are hours more. Treat this as an overnight release gate.
@@ -238,7 +290,40 @@ instead and never connects.
 `OSStatus error -1712` (AppleEvent timed out) and stays `started` forever.
 `vm_kill` therefore falls back to killing the QEMU process by bundle path.
 
-## Four expect traps, all of which look like a hung guest
+## The installer runs bash; the installed system runs fish
+
+`configuration.nix` sets `users.users.root.shell = pkgs.fish`, and that split
+accounts for a whole class of failures where the guest looked hung or a probe
+looked empty. Two distinct problems, found in that order:
+
+**fish rejects `$?`.** `... | replace-boot-disk.sh; echo R-EXIT=$?` was typed,
+submitted, and thrown away by fish before the script ever ran — fish wants
+`$status`. The console showed a command sitting on the prompt line and no
+output. The install phase was never affected because that runs on the ISO,
+under bash.
+
+**fish repaints the line as characters arrive.** Syntax highlighting and
+autosuggestions redraw the input line on every keystroke, and over a slow
+emulated serial console that turned `echo PROBE:...` into `eecho PROBE:...`,
+which fish then reported through its command-not-found handler. The probe never
+ran, and the transcript scraper picked a redraw fragment instead of a value —
+so **every probe in the boot and degraded phases came back empty while the boot
+itself passed**. Eleven assertions failed for that one reason, and the same
+commit passed all of them under `bios` once the fix was in.
+
+The fix for both is to stop scripting into an interactive shell. The drivers
+land in fish first — which still proves the login shell works, and is worth
+keeping — then `exec bash --noprofile --norc` with a fixed one-line prompt, and
+readline's line editing and bracketed paste turned off. No repainting, no
+autosuggestion, no command-not-found, no `$?`-versus-`$status`.
+
+Two earlier theories in this file were wrong and are named so they are not
+retried: a trailing `\r` being eaten by the prompt redraw, and the command
+being too long to submit. What isolated the real cause was the readiness
+handshake — once the shell provably echoed a token back, "the shell is not
+listening" was ruled out and only "the shell mangled the command" was left.
+
+## expect traps, all of which look like a hung guest
 
 These cost more time than anything on the UTM side, so they are worth naming.
 
@@ -258,6 +343,28 @@ greps — so a failed phase reported "see the log" and the log said nothing.
 not treat `#` specially in a pattern list, so every `# ...` line was a live
 pattern matching stray output. Both blocks were rewritten with the commentary
 moved above them.
+
+**`send` on a dropped connection raises, it does not return an error.** UTM
+drops the serial TCP client whenever the guest reinitialises the UART, which
+the `expect {}` blocks all handle with an `eof` branch — but `wait_shell_ready`,
+`enter_bash` and `probe` called `send` directly. A drop landing inside the
+handshake produced
+
+```
+send: spawn id exp6 not open
+    while executing
+"send -s "echo $tok""
+    (procedure "wait_shell_ready" line 5)
+```
+
+which killed a phase that had booted perfectly well, and skipped the two phases
+after it. Every direct `send` is now wrapped in `catch` with a reconnect.
+
+**Do not bail on a marker before the line carrying it has arrived.** The
+replace driver matched `FATAL` and exited immediately, cutting the connection
+mid-line, so the transcript ended at `` FATAL  /d`` — the first two characters
+of `/dev/disk/by-id/... is in use by imported pool`. The reason *is* the value
+of the failure; the driver now drains the rest of the line before reporting.
 
 ## The one that actually blocked the run
 
@@ -300,3 +407,15 @@ place for the next phase. Transcripts land in `tests/vm/logs/`.
 When a full run completes, replace the status table above with what it actually
 reported. If it fails, the transcript plus the `FAILED:` line the expect driver
 prints is the whole story.
+
+## The rule that made this suite worth its runtime
+
+Every defect above was found by a booted VM and then **pushed down into CI**:
+the hostId symlink problem is guarded by `tests/lint.sh` and the ISO's own
+behaviour, and the by-id defect has unit tests in `tests/lib-unit.sh` covering
+both `udevadm` orderings with a fake `udevadm` and no VM at all.
+
+Do the same with anything found here. A VM run is the only way to *discover*
+this class of bug and the worst possible way to *regression-test* it — hours
+versus a second or two. The VM suite should keep only what genuinely needs
+firmware, a bootloader and an initrd.

@@ -290,9 +290,9 @@ Linux). One VM per firmware mode is installed, then progressively broken:
 | Phase | What it proves |
 |---|---|
 | `install` | `install-me.sh` runs unattended to completion on a 3-way mirror; hostId set before any pool exists; the pool really is `mirror-0`; pools exported for a clean first import |
-| `boot` | the installed system boots off the mirror to a shell — hostname and hostId intact, pool `ONLINE`, `/` on the ZFS dataset, `disk-layout.json` matching the firmware, and GRUB at `EFI/BOOT/BOOTX64.EFI` |
+| `boot` | the installed system boots off the mirror to a shell — hostname and hostId intact, pool `ONLINE` with no DEGRADED vdev, `/` on the ZFS dataset, `disk-layout.json` matching the firmware, systemd at `running` with no failed units, every member's boot partition mounted, the pool imported with no force flag, and GRUB at `EFI/BOOT/BOOTX64.EFI` |
 | `degraded` | with the **first** disk pulled — the one whose ESP is `/boot` — it still boots: pool `DEGRADED`, `/` mounted, `nofail` keeping the missing `/boot` from blocking startup, `zfs-health-check` noticing |
-| `replace` | `replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, reinstalls the bootloader, and the pool returns to healthy |
+| `replace` | `replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, reinstalls the bootloader, and the pool returns to fully `ONLINE` with the hostId undisturbed |
 
 ```sh
 bash tests/vm-boot.sh          # both firmware modes; takes hours
@@ -315,6 +315,16 @@ routine run. Setup, knobs and troubleshooting: **[`tests/vm/README.md`](tests/vm
   (`boot.zfs.requestEncryptionCredentials` prompts in the initrd).
 - **`ALLOW_MIXED_SIZE=1` is not tested as thoroughly** as the identical-disk
   path. Prefer identical disks.
+- **A freshly installed machine reports its boot mirror as stale.** The VM
+  suite catches `zfs-health-check` emitting `BOOT MIRROR: /boot-fallback-1 does
+  not match /boot - stale bootloader copy` immediately after a successful
+  install. It is not yet known whether the installer really leaves the fallback
+  ESPs incomplete — which would matter, since booting off a survivor is the
+  point — or whether the health check's filename comparison is too strict and
+  every healthy machine warns on a 15-minute timer. Until it is resolved, treat
+  that particular warning on a brand-new machine as unexplained rather than
+  either safe or fatal. Details in
+  [`tests/vm/RESULTS.md`](tests/vm/RESULTS.md).
 - **The data pool is not covered by the VM suite.** `tests/vm-boot.sh` drives
   `install-me.sh` with the "skip" option, so creating and importing an
   encrypted `zdata` is still only evaluated, never booted.
