@@ -231,7 +231,7 @@ vm_write_config () {
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
-        --argjson mem "${VM_MEM_MB:-4096}" --argjson cores "${VM_CORES:-4}" '{
+        --argjson mem "${VM_MEM_MB:-8192}" --argjson cores "${VM_CORES:-4}" '{
         Backend:              "QEMU",
         ConfigurationVersion: 4,
         Display:              [],

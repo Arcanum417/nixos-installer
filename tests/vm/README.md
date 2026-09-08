@@ -60,7 +60,7 @@ Phases are **sequential and stateful** — `boot` needs the disks `install` left
 `degraded` needs a system to degrade. Running one in isolation only works if a
 previous run left the VM in place (`VM_KEEP=1`).
 
-Useful knobs: `DISK_GB` (default 8), `NDISKS` (default 3), `VM_MEM_MB` (4096),
+Useful knobs: `DISK_GB` (default 8), `NDISKS` (default 3), `VM_MEM_MB` (8192),
 `VM_CORES` (4), `NIXOS_CHANNEL` (`nixos-25.05`).
 
 ### Budget the time
