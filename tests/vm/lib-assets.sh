@@ -79,6 +79,13 @@ write_test_unique_nix () { # write_test_unique_nix PATH
   documentation.nixos.enable = false;
   documentation.man.generateCaches = false;
 
+  # Two boot-time time sinks that have nothing to do with these assertions.
+  # timesyncd blocks for 90 guest-seconds waiting for a network clock, and the
+  # scrub timer can start a scrub that saturates an emulated CPU -- on a guest
+  # already running ~50x slower than wall clock, both are very expensive.
+  services.timesyncd.enable = false;
+  services.zfs.autoScrub.enable = false;
+
   # Docker is a large part of this closure and delays every boot ("A start job
   # is running for Docker Application Container Engine"), while this suite
   # asserts nothing about it: it drives install-me.sh with the data pool
