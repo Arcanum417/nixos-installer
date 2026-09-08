@@ -62,42 +62,36 @@ in the committed code but **have not yet been re-verified by a run**:
 
 ### Not yet established
 
-- **`replace`.** Root-caused, fixed, not yet re-verified.
+- **`replace`.** Root cause found and fixed; the fix is **not yet verified by
+  a run** because each attempt costs hours.
 
-  The phase reached a shell, typed its command, and sat there. Attaching to
-  the console showed exactly why:
+  The phase reached a shell, sent its command, and the script never produced a
+  line. The cause is that `configuration.nix` sets
 
+  ```nix
+  users.users.root.shell = pkgs.fish;
   ```
-  root in ~
-  > printf ... | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=$?
-  ```
 
-  The command was sitting on the prompt line, never executed. The installed
-  system runs **fish with starship**, which redraws the prompt after every
-  keystroke -- the transcript is full of bracketed-paste toggles and cursor-up
-  sequences. A `\r` appended to the end of a slow-typed command gets eaten by
-  that redraw and nothing is submitted. The ISO runs plain bash and does not
-  do this, which is why the install phase always worked, only the phases that
-  talk to the installed system hung, and the shorter probe commands mostly got
-  through.
+  and **fish does not accept `$?`** -- it rejects the expression and tells you
+  to use `$status`. So `... | replace-boot-disk.sh; echo REPLACE-EXIT=$?` was
+  typed, submitted, and discarded by fish before the script ever ran. That is
+  exactly what the console showed: a command sitting on the prompt line and no
+  output. It also explains why the install phase was never affected -- that
+  runs on the ISO, under bash.
 
-  The drivers now type the text, sleep so fish settles, then send Return on
-  its own. **This did not fix it.** A run with that change in place reached
-  the same point: the step marker is written, the command is sent, and the
-  console then shows only further systemd boot messages with no script output
-  at all. So the trailing-`\r` theory is at best incomplete.
+  The command is now wrapped in `bash -c` so the pipeline, the quoting and
+  `$?` all mean what the script expects.
 
-  What is still unexplained is that the prompt pattern matches while the guest
-  is evidently still booting -- systemd keeps printing unit messages after the
-  match. The OSC 133 marker is very likely emitted by the getty before the
-  shell is interactive, so the command is typed into something that is not yet
-  reading. If so the fix is to wait for a *settled* prompt (for example, echo
-  a token and require it back) rather than the first 133;A. That is the next
-  thing to try; it has not been tried.
+  Two earlier theories in this file were wrong and are worth naming so they
+  are not retried: a trailing `\r` being eaten by fish's prompt redraw, and
+  the command being too long to submit. Neither was it. What isolated the real
+  cause was the readiness handshake -- once the shell provably echoed a token
+  back, "the shell is not listening" was ruled out and only "the shell
+  rejected the command" was left.
 
-  Two earlier notes in this file were wrong and are corrected: the guest does
-  not "sit in firmware" (it boots), and the hang was not `zpool status`
-  blocking on a missing disk (the script never ran at all).
+  The lesson for anyone extending this suite: **the installer environment is
+  bash, the installed system is fish.** Anything sent to the installed system
+  should go through `bash -c`.
 
 - **The whole `bios` matrix.** Never run.
 - **A clean re-run of `uefi`** with the two harness fixes in place.
