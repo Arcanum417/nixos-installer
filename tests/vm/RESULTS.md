@@ -126,6 +126,112 @@ covers.
 - **Real hardware.** The guest is emulated. Firmware quirks, real controller
   behaviour and anything timing-dependent are out of reach by construction.
 
+## The same suite on Proxmox
+
+The suite has two backends behind one contract, and both are green. On a
+Proxmox VE 8.2.5 node with `/dev/kvm`, **73 checks, 0 failed, 1 skipped** —
+two more checks than the UTM run because the ISOs have to be uploaded to the
+node:
+
+```
+assets
+  ok   installer ISO cached (1.7G)
+  ok   generated configuration evaluates
+  ok   repo ISO built
+  ok   installer ISO repacked with a serial console as the default entry
+  ok   installer ISO already on pve
+  ok   repo ISO uploaded to pve
+uefi
+  ok   uefi: guest serial port opens
+  ok   uefi: install-me.sh completes on a 3-disk mirror
+  ok   uefi: hostid was set before any pool existed
+  ok   uefi: pool is a mirror
+  ok   uefi: pools exported for a clean first import
+  ok   uefi: installed system boots off the mirror
+  ok   uefi: hostname from unique.nix
+  ok   uefi: hostid survived the install
+  ok   uefi: root pool is ONLINE
+  ok   uefi: pool reports healthy
+  ok   uefi: root is the zfs dataset
+  ok   uefi: layout json matches the firmware
+  ok   uefi: layout json records 3 disks
+  ok   uefi: systemd reports the system running
+  ok   uefi: no failed units
+  ok   uefi: zfs-health-check reports healthy
+  ok   uefi: no vdev is DEGRADED
+  ok   uefi: every mirror member's boot partition is mounted
+  ok   uefi: root pool imported without a force flag
+  ok   uefi: GRUB is at the removable path
+  ok   uefi: boots with the first mirror member pulled
+  ok   uefi: pool notices the missing disk
+  ok   uefi: pool is DEGRADED but usable
+  ok   uefi: root still mounted from the pool
+  ok   uefi: a missing /boot did not block startup (nofail)
+  ok   uefi: zfs-health-check reports the degradation
+  ok   uefi: replace-boot-disk.sh resilvers onto a new disk
+  ok   uefi: GUIDs randomised on the replacement
+  ok   uefi: bootloader reinstalled onto the new disk
+  ok   uefi: pool healthy again after resilver
+  ok   uefi: layout json now names the new disk
+  ok   uefi: pool is ONLINE again, not just not-failing
+  ok   uefi: no vdev left DEGRADED after the resilver
+  ok   uefi: hostid unchanged by the replace
+bios
+  ok   bios: guest serial port opens
+  ok   bios: install-me.sh completes on a 3-disk mirror
+  ok   bios: hostid was set before any pool existed
+  ok   bios: pool is a mirror
+  ok   bios: pools exported for a clean first import
+  ok   bios: installed system boots off the mirror
+  ok   bios: hostname from unique.nix
+  ok   bios: hostid survived the install
+  ok   bios: root pool is ONLINE
+  ok   bios: pool reports healthy
+  ok   bios: root is the zfs dataset
+  ok   bios: layout json matches the firmware
+  ok   bios: layout json records 3 disks
+  ok   bios: systemd reports the system running
+  ok   bios: no failed units
+  ok   bios: zfs-health-check reports healthy
+  ok   bios: no vdev is DEGRADED
+  ok   bios: every mirror member's boot partition is mounted
+  ok   bios: root pool imported without a force flag
+  skip bios: removable EFI path (BIOS mode has no ESP)
+  ok   bios: boots with the first mirror member pulled
+  ok   bios: pool notices the missing disk
+  ok   bios: pool is DEGRADED but usable
+  ok   bios: root still mounted from the pool
+  ok   bios: a missing /boot did not block startup (nofail)
+  ok   bios: zfs-health-check reports the degradation
+  ok   bios: replace-boot-disk.sh resilvers onto a new disk
+  ok   bios: GUIDs randomised on the replacement
+  ok   bios: bootloader reinstalled onto the new disk
+  ok   bios: pool healthy again after resilver
+  ok   bios: layout json now names the new disk
+  ok   bios: pool is ONLINE again, not just not-failing
+  ok   bios: no vdev left DEGRADED after the resilver
+  ok   bios: hostid unchanged by the replace
+vm-boot: 73 checks, 0 failed, 1 skipped
+```
+
+**About an hour for both modes**, against most of a day on UTM. The guest is
+the same x86_64 machine; the difference is KVM instead of TCG.
+
+| Phase | uefi | bios |
+|---|---|---|
+| `install` | ~9 min | ~3.5 min |
+| `boot` | ~2.5 min | ~2.5 min |
+| `degraded` | ~5.5 min | ~6.5 min |
+| `replace` | ~15 min | ~15 min |
+
+Eight bugs turned up on first contact with a real node, all of them in the new
+backend rather than the installer, and `tests/vm/README-proxmox.md` lists them.
+Two are worth repeating here because they invert the usual assumption: the
+probes raced their own output, and `eval spawn [split $cmd]` corrupted
+`spawn_id`. **Both were invisible on UTM because emulation is slow enough to
+hide them.** A slower environment does not just take longer; it conceals a
+whole category of timing bug, and the fast environment is what exposes it.
+
 ## The `_1` suffix: retracted, and what it really was
 
 On the first boot after an early install, `/boot` did not mount:

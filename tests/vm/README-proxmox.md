@@ -10,12 +10,24 @@ takes hours. An x86_64 Proxmox node runs the identical guest under KVM, so the
 same work happens at near-native speed. Proxmox also gives more realistic
 hardware: real OVMF and SeaBIOS, virtio-scsi, and a node that is not a laptop.
 
-**Status: written but not yet run against a real node.** Every API call, the
-serial mechanism and the disk semantics come from the Proxmox documentation and
-source (see the reading list at the bottom), and the code is shellcheck-clean,
-but nothing here has been executed against a live cluster. Expect to shake out
-one or two things on first contact — the likely candidates are called out under
-*Known uncertainties*.
+**Status: verified.** A full run — both firmware modes, all four phases —
+passes against a live PVE 8.2.5 node: **73 checks, 0 failed, 1 skipped** (the
+skip is structural: BIOS has no ESP). `RESULTS.md` carries the verbatim output
+and the bugs first contact turned up.
+
+**It takes about an hour**, both modes end to end, against most of a day on
+UTM. Measured per phase on a node with `/dev/kvm`:
+
+| Phase | uefi | bios |
+|---|---|---|
+| `install` | ~9 min | ~3.5 min |
+| `boot` | ~2.5 min | ~2.5 min |
+| `degraded` | ~5.5 min | ~6.5 min |
+| `replace` | ~15 min | ~15 min |
+
+The install is quicker in BIOS mode because the two firmware modes build
+different GRUB derivations and the shared parts of the closure are already in
+the node's store by then.
 
 ## Setting it up
 
@@ -180,25 +192,56 @@ The suite talks to a machine that may host real VMs, so:
 - Set `protection: 1` on VMs you care about. It blocks remove operations at the
   hypervisor. Leave it off the test VMs or cleanup cannot work.
 
-## Known uncertainties
+## What first contact settled
 
-Flagged rather than buried, since none of this has met a real node yet:
+These were listed as uncertainties before the backend had met a real node.
+Resolved by observation:
 
-- **The exact guest `/dev/disk/by-id/` string.** `wwn-0x...` is documented, but
-  the udev-derived `scsi-*` sibling is not. If a phase fails claiming a disk is
-  missing, dump `ls -l /dev/disk/by-id/` from the guest and compare.
-- **One client on the serial socket.** A QEMU socket chardev serves a single
-  client. Do not leave a browser console open on the VM while the suite runs.
-- **API tokens on the console endpoints.** Proxmox's own docs and its API schema
-  disagree about whether a token may use `termproxy`/`vncwebsocket`. Moot here —
-  this backend uses `ssh` + `socat` and needs no PVE ticket — but relevant if
-  anyone reworks the console path.
-- **Whether a privsep token can read its own task status.** It works here, but
-  the harness polls task UPIDs constantly, so if you see tasks appear to hang,
-  check for `Sys.Audit` being needed on `/nodes/{node}`.
+- **The guest's `/dev/disk/by-id/` name is `scsi-3<wwn>`.** Setting `wwn=` on
+  each drive produces `/dev/disk/by-id/scsi-35000c50000ff0001-part2` and
+  friends inside the guest — udev's SCSI form built from the WWN, stable across
+  reboots and across the detach/reattach the degraded and replace phases do.
+  That is what `disk-layout.json` records and `disk-layout.nix` consumes.
+- **One client on the serial socket is a real constraint.** It behaved exactly
+  as documented. Do not leave a browser console open on the VM while the suite
+  runs.
+- **A privsep token can read its own task status.** The harness polls task
+  UPIDs constantly and never needed `Sys.Audit`.
+
+Two things still worth knowing:
+
+- **Destroying a VM removes its VM-specific permissions.** This is why the
+  token is granted on a pool rather than per-VMID; see `PVE_POOL` in
+  `lib-proxmox.sh`. Granting per-VMID works exactly once.
 - **`qm wait`.** There is a node-side `qm wait <vmid> --timeout N` with no REST
   equivalent; `vm_wait_stopped` polls `/status/current` instead, which works
   from off-box without root.
+
+## Bugs this backend had, and what found them
+
+Every one was in the harness rather than the installer, and none was visible to
+shellcheck or to reading the code:
+
+1. `local vmid; vmid=$(...) upid` parses as "run the command `upid`".
+2. `net0=virtio,bridge=...` is config-file syntax the API rejects; it wants
+   `model=virtio`.
+3. Destroying a VM removed the per-VMID ACL, so cleanup deleted the harness's
+   own access: the first run worked and every later one returned 403.
+4. `env(...)` inside a Tcl proc does not see the global `env` array, so every
+   run silently fell back to `nc` — which meant attaching to whatever happened
+   to be on that TCP port rather than to the guest.
+5. `spawn` swallowed `-o BatchMode=yes` as an abbreviation of its own `-open`
+   flag. Hence the helper script: a single path with no dashes in it.
+6. A boot order naming a disk that does not exist yet makes Proxmox store an
+   *empty* order, and OVMF then drops to the UEFI Shell.
+7. The probes raced their own output, so a value could be scored empty on a
+   healthy pool. Fixed with a per-probe sentinel.
+8. `eval spawn [split $cmd]` left `spawn_id` holding the command string minus
+   its first eight characters.
+
+The last two only appear on a fast guest: UTM's emulation was slow enough to
+hide both. That is worth remembering — a slower environment does not simply
+take longer, it hides a category of bug.
 
 ## Reading list
 

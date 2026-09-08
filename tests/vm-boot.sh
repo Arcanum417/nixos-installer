@@ -181,6 +181,12 @@ run_expect () { # run_expect SCRIPT LOGFILE ARGS...
 # reported as a code defect.
 PHASE_OK=1
 
+# Per-phase wall clock, summarised at the end. Without it, "why does a run take
+# an hour" can only be answered by reading timestamps off log files afterwards
+# -- which is how ten minutes of pure polling hid inside the replace phase.
+TIMINGS=()
+RUN_START=$(date +%s)
+
 # --------------------------------------------------------------- phases ------
 
 phase_install () { # phase_install NAME FIRMWARE PORT
@@ -393,6 +399,7 @@ for mode in "${MODES[@]}"; do
             skip "$mode: phase $ph" "an earlier phase failed"
             continue
         fi
+        ph_start=$(date +%s)
         case $ph in
             install)  phase_install  "$name" "$mode" "$port" ;;
             boot)     phase_boot     "$name" "$mode" "$port" ;;
@@ -400,7 +407,16 @@ for mode in "${MODES[@]}"; do
             replace)  phase_replace  "$name" "$mode" "$port" ;;
             *) _fail "unknown phase" "$ph" ;;
         esac
+        ph_secs=$(( $(date +%s) - ph_start ))
+        TIMINGS+=("$(printf '%-16s %3dm%02ds' "$mode/$ph" $(( ph_secs / 60 )) $(( ph_secs % 60 )))")
     done
 done
+
+if (( ${#TIMINGS[@]} > 0 )); then
+    section "timing"
+    for t in "${TIMINGS[@]}"; do printf '  %s\n' "$t"; done
+    run_secs=$(( $(date +%s) - RUN_START ))
+    printf '  %-16s %3dm%02ds\n' total $(( run_secs / 60 )) $(( run_secs % 60 ))
+fi
 
 summary "vm-boot"

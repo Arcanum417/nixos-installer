@@ -250,7 +250,12 @@ vm_define () {
     # the two cells. q35 is not required for OVMF; pinning one machine type for
     # both modes is what makes the comparison honest.
     args+=(-d ostype=l26 -d machine=q35)
-    args+=(-d "cores=${VM_CORES:-4}" -d "memory=${VM_MEM_MB:-8192}")
+    # 8 cores by default, same as the UTM backend. The install's expensive part
+    # is compiling GRUB (disk-layout.nix sets zfsSupport, which is not a cached
+    # derivation) and that parallelises. Raise VM_CORES if the node has the
+    # threads to spare -- nix defaults cores = 0, so make -j follows the vCPU
+    # count with no installer flag.
+    args+=(-d "cores=${VM_CORES:-8}" -d "memory=${VM_MEM_MB:-8192}")
     # cpu=host because the guest is the same architecture as the node, which is
     # the entire reason this backend is faster than UTM. balloon=0 because
     # ballooning is on by default and pvestatd reclaims memory on a schedule --

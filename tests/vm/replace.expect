@@ -285,7 +285,19 @@ expect {
 # An 8 GiB mostly-empty mirror resilvers quickly, but wait for it rather than
 # asserting against a pool that is still rebuilding.
 set timeout $cmd_timeout
-send -s "for i in \$(seq 1 120); do zpool status zroot | grep -q 'scan:.*resilvered' && break; sleep 5; done\r"
+# Wait for the resilver to finish, and *detect* that rather than grep for a
+# word that may not appear.
+#
+# The previous pattern looked for "scan:.*resilvered". A pool that has been
+# scrubbed reports "scan: scrub repaired 0B ..." on that line instead, so the
+# pattern never matched and the loop ran its full ceiling -- 120 iterations of
+# sleep 5, ten minutes of polling after a resilver that finishes in seconds on
+# an 8 GiB pool. That was most of this phase's runtime.
+#
+# "resilver in progress" is what ZFS prints while one is running, so waiting
+# for its absence is both correct and quick. The zpool status -x check keeps
+# it honest: absence of the phrase is only good news if the pool is healthy.
+send -s "for i in \$(seq 1 240); do zpool status zroot | grep -q 'resilver in progress' || { zpool status -x zroot | grep -q healthy && break; }; sleep 2; done\r"
 set timeout 900
 wait_prompt
 send_log "\n\[step\] resilver settled\n"
