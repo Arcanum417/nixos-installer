@@ -70,7 +70,13 @@ proc serial_connect {} {
         # which surfaces much later as an inscrutable "spawn id ... not open".
         set ok 0
         for {set try 0} {$try < 30} {incr try} {
-            if {![catch {eval spawn [split $::env(VM_SERIAL_CMD)]} err]} { set ok 1; break }
+            # spawn the path directly -- no eval, no split. `eval spawn
+            # [split $cmd]` left spawn_id holding the command string with its
+            # first eight characters lopped off ("ssh -T -", "/var/fol"),
+            # which surfaced later as "spawn id <mangled> not open". The
+            # backend hands over a single executable path precisely so this
+            # can be one word.
+            if {![catch {spawn $::env(VM_SERIAL_CMD)} err]} { set ok 1; break }
             send_log "\n\[serial\] spawn failed (try $try): $err\n"
             sleep 2
         }
@@ -290,6 +296,8 @@ send_log "\n\[step\] resilver settled\n"
 # Emit one PROBE:<name>:<value> line per fact. tests/vm-boot.sh parses these
 # out of the transcript, so this only has to send the command and wait for the
 # prompt -- matching the echoed PROBE text itself proved unreliable here.
+set probe_seq 0
+
 proc probe {name cmd} {
     set timeout 300
     # { ...; } 2>&1 so the command's exit status cannot change what is
@@ -302,13 +310,31 @@ proc probe {name cmd} {
     # Guarded like the handshake: a serial drop mid-probe otherwise raises
     # "spawn id expN not open" and takes the whole phase down with a Tcl stack
     # trace, losing every probe that would have followed.
-    if {[catch {send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )"}]} {
+    # Wait for a per-probe end marker rather than for the prompt.
+    #
+    # Matching the prompt is not enough: it can match one printed before the
+    # command's output has finished arriving, and the driver then sends the
+    # next probe on top of the tail of this one. On a fast (KVM) guest that
+    # produced interleaved lines like
+    #     cPROBE:poolhealthy:pool 'zroot' isho PROBE:members_online:...
+    # and the value was scored as empty. A slow emulated guest hid it.
+    #
+    # The marker is printed by a separate printf, so the literal text never
+    # appears in the echoed command line -- matching the echo instead of the
+    # output is exactly the false-positive this is meant to avoid.
+    incr ::probe_seq
+    set marker "EOP$::probe_seq"
+    if {[catch {send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' ) ; printf 'EOP%d\\n' $::probe_seq"}]} {
         reconnect_or_bail
         return
     }
     sleep 1
     if {[catch {send "\r"}]} { reconnect_or_bail; return }
-    wait_prompt
+    expect {
+        -re "$marker" { }
+        eof     { reconnect_or_bail }
+        timeout { }
+    }
 }
 
 

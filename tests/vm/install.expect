@@ -81,7 +81,13 @@ proc serial_connect {} {
         # which surfaces much later as an inscrutable "spawn id ... not open".
         set ok 0
         for {set try 0} {$try < 30} {incr try} {
-            if {![catch {eval spawn [split $::env(VM_SERIAL_CMD)]} err]} { set ok 1; break }
+            # spawn the path directly -- no eval, no split. `eval spawn
+            # [split $cmd]` left spawn_id holding the command string with its
+            # first eight characters lopped off ("ssh -T -", "/var/fol"),
+            # which surfaced later as "spawn id <mangled> not open". The
+            # backend hands over a single executable path precisely so this
+            # can be one word.
+            if {![catch {spawn $::env(VM_SERIAL_CMD)} err]} { set ok 1; break }
             send_log "\n\[serial\] spawn failed (try $try): $err\n"
             sleep 2
         }
