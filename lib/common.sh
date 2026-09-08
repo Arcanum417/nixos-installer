@@ -143,7 +143,13 @@ by_id_path () { # by_id_path /dev/sda
     while read -r link; do
         [[ $link == disk/by-id/* ]] || continue
         case ${link#disk/by-id/} in
-            nvme-eui.*|wwn-*)         r=8 ;;
+            # eui and wwn are separate ranks, not one shared rank. They are
+            # different kinds of name, and the tie-break below is only meant to
+            # choose between two spellings of the *same* kind (the NVMe
+            # device-level and namespace-scoped links). Sharing a rank let the
+            # tie-break prefer wwn over eui purely because it is shorter.
+            nvme-eui.*)               r=8 ;;
+            wwn-*)                    r=9 ;;
             nvme-nvme.*)              r=7 ;;
             md-*|dm-*|lvm-*)          continue ;;
             nvme-*)                   r=1 ;;
