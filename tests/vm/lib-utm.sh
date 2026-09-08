@@ -92,15 +92,24 @@ vm_wait_stopped () {
 # (`import` is the other option and is worse: it copies the bundle and leaves a
 # second VM with the same name registered.)
 utm_reload () {
-    osascript -e 'tell application "UTM" to quit' >/dev/null 2>&1 || true
+    # SIGTERM, not `osascript -e 'tell application "UTM" to quit'`.
+    #
+    # AppleScript has no timeout: if UTM is busy or wedged, osascript blocks
+    # forever and no amount of bounding the loops below helps. That hung this
+    # suite repeatedly -- the harness sat in utm_reload for tens of minutes
+    # before a phase could even start its driver. Signals are bounded.
+    pkill -x UTM 2>/dev/null || true
     local waited=0
-    while pgrep -x UTM >/dev/null && (( waited < 30 )); do sleep 1; waited=$((waited+1)); done
-    pgrep -x UTM >/dev/null && pkill -x UTM
+    while pgrep -x UTM >/dev/null && (( waited < 20 )); do sleep 1; waited=$((waited+1)); done
+    pgrep -x UTM >/dev/null && pkill -9 -x UTM 2>/dev/null
+    sleep 1
+
     open -a UTM
     waited=0
     while ! "$UTM_BIN" list >/dev/null 2>&1 && (( waited < 60 )); do sleep 1; waited=$((waited+1)); done
     "$UTM_BIN" list >/dev/null 2>&1
 }
+
 
 # Deletes the bundle directly rather than via `utmctl delete`, so a typo in a
 # name can never remove one of the operator's own VMs.
