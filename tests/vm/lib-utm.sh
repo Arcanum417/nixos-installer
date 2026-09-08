@@ -202,16 +202,25 @@ vm_write_config () {
     # an arm64 host, so QEMU runs in TCG. That is the whole reason this suite
     # is slow and opt-in.
     #
-    # ForceMulticore is therefore the one real speed lever. Without it QEMU
-    # serialises TCG onto a single translation thread no matter how many vCPUs
-    # the guest has, which makes nixos-install painfully slow; with it each
-    # vCPU gets its own thread. It is the reason CPUCount defaults to 8.
+    # ForceMulticore stays OFF, and this was measured rather than guessed.
+    # Turning it on with 8 vCPUs looked like the obvious speed lever, but:
+    #
+    #   - it bought nothing. QEMU sat at ~104% CPU on an 18-core host either
+    #     way, because the guest workload is serial: nix builds one derivation
+    #     at a time and a configure script cannot be parallelised. Multi-
+    #     threaded TCG had nothing to spread across threads.
+    #   - it destabilised the guest. An install that had previously run
+    #     hundreds of substitutions stalled dead at "copying channel..." with
+    #     QEMU at 0.0% CPU -- a multi-threaded TCG deadlock, not slow progress.
+    #
+    # The thing that actually made installs faster was giving the guest less to
+    # build (see documentation.* in lib-assets.sh), not more cores to build on.
     jq -n \
         --arg name "$name" --arg uuid "$uuid" \
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
-        --argjson mem "${VM_MEM_MB:-4096}" --argjson cores "${VM_CORES:-8}" '{
+        --argjson mem "${VM_MEM_MB:-4096}" --argjson cores "${VM_CORES:-4}" '{
         Backend:              "QEMU",
         ConfigurationVersion: 4,
         Display:              [],
@@ -230,7 +239,7 @@ vm_write_config () {
                                 DirectoryShareReadOnly: true },
         Sound:                [],
         System:               { Architecture: "x86_64", CPU: "default", CPUCount: $cores,
-                                CPUFlagsAdd: [], CPUFlagsRemove: [], ForceMulticore: true,
+                                CPUFlagsAdd: [], CPUFlagsRemove: [], ForceMulticore: false,
                                 JITCacheSize: 0, MemorySize: $mem, Target: "q35" }
         }' > "$bundle/config.json"
 

@@ -61,7 +61,7 @@ Phases are **sequential and stateful** — `boot` needs the disks `install` left
 previous run left the VM in place (`VM_KEEP=1`).
 
 Useful knobs: `DISK_GB` (default 8), `NDISKS` (default 3), `VM_MEM_MB` (4096),
-`VM_CORES` (8), `NIXOS_CHANNEL` (`nixos-25.05`).
+`VM_CORES` (4), `NIXOS_CHANNEL` (`nixos-25.05`).
 
 ### Budget the time
 
@@ -75,10 +75,13 @@ Expect **hours, not minutes**, for a full run — `nixos-install` is building an
 activating a system closure under emulation. This is a release gate you run
 deliberately, not something to put in a pre-commit hook.
 
-The one lever that matters is UTM's `ForceMulticore`, which the harness always
-sets. Without it QEMU serialises TCG onto a single translation thread however
-many vCPUs the guest has; with it each vCPU gets its own. That is why
-`VM_CORES` defaults to 8 — raise it further on a machine with cores to spare.
+Do not reach for more vCPUs or UTM's `ForceMulticore` to speed this up — both
+were tried and measured. QEMU stayed at ~104% CPU on an 18-core host either
+way, because the guest workload is serial (nix builds one derivation at a time,
+and a configure script cannot be parallelised), and multi-threaded TCG also
+deadlocked an install outright at 0% CPU. What actually helps is giving the
+guest less to *build*: the fixture disables the NixOS manual and the man cache,
+which are the only large derivations not available from the binary cache.
 
 ## When something fails
 
