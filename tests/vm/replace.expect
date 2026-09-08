@@ -72,42 +72,29 @@ expect {
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 22 "no shell after ${boot_timeout}s" }
 }
-send -s "dmesg -n 1; echo QUIET-OK\r"
-expect { "QUIET-OK" { } timeout { } }
+send -s "dmesg -n 1\r"
+wait_prompt
 
 # ---------------------------------------------------------------- replace
 
-send -s "/etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=\$?\r"
-
-set picked_new 0
-set timeout $replace_timeout
-# NOTE: no comments inside this expect block -- Tcl would treat each "#" line
-# as a live pattern. The branches are:
+# Answers on stdin, for the same reason as install.expect: confirm's "[Y/n]"
+# cannot be matched on this console. Exact for "UEFI, slot 0 missing, one new
+# blank disk offered":
 #
-#   "which member to"       ask PICK; the default is already the failed slot
-#   "number toggles..."     select_disks for the replacement. Only the new
-#                           blank disk is offered; surviving members are
-#                           excluded by by-id
-#   "anything else aborts"  confirm_hard "... REPLACE"
-#   "Y/n"                   confirm "Delete its contents?" -- leftovers
-#                           written to the root pool while the disk was missing
+#   <blank>  ask PICK -- the default is already the failed slot
+#   1        select_disks: the only candidate is the new disk
+#   d        select_disks done
+#   REPLACE  confirm_hard
+#   y        confirm "Delete its contents?" (leftovers written to the root
+#            pool while the disk was missing; harmless if not asked)
+send_log "\n\[step\] running replace-boot-disk.sh\n"
+send -s "printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=\$?\r"
+
+set timeout $replace_timeout
 expect {
-    "which member to" {
-        send -s "\r"; exp_continue
-    }
-    "number toggles, d when done" {
-        if {$picked_new == 0} { set picked_new 1; send -s "1\r" } else { send -s "d\r" }
-        exp_continue
-    }
-    "anything else aborts" {
-        send -s "REPLACE\r"; exp_continue
-    }
-    "Y/n" {
-        send -s "y"; exp_continue
-    }
-    "FATAL" { bail 13 "replace-boot-disk.sh aborted with a FATAL" }
-    "REPLACE-EXIT=0" { send_log "\n\[step\] replace finished cleanly\n" }
-    -re {REPLACE-EXIT=([1-9][0-9]*)} { bail 14 "replace-boot-disk.sh exited non-zero" }
+    -re {REPLACE-EXIT=0} { send_log "\n\[step\] replace finished cleanly\n" }
+    -re {REPLACE-EXIT=[1-9]} { bail 14 "replace-boot-disk.sh exited non-zero" }
+    -re {FATAL} { bail 13 "replace-boot-disk.sh aborted with a FATAL" }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 15 "replace timed out after ${replace_timeout}s" }
 }
@@ -117,31 +104,38 @@ expect {
 # An 8 GiB mostly-empty mirror resilvers quickly, but wait for it rather than
 # asserting against a pool that is still rebuilding.
 set timeout $cmd_timeout
-send -s "for i in \$(seq 1 120); do zpool status zroot | grep -q 'scan:.*resilvered' && break; sleep 5; done; echo RESILVER-WAITED\r"
+send -s "for i in \$(seq 1 120); do zpool status zroot | grep -q 'scan:.*resilvered' && break; sleep 5; done\r"
 set timeout 900
-expect {
-    "RESILVER-WAITED" { }
-    timeout { send_user "\n\[replace.expect\] resilver wait timed out\n" }
-}
+wait_prompt
+send_log "\n\[step\] resilver settled\n"
 
 # ---------------------------------------------------------------- probes
 
+proc wait_prompt {} {
+    global spawn_id
+    expect {
+        -re {root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { }
+    }
+}
+
+# Emit one PROBE:<name>:<value> line per fact. tests/vm-boot.sh parses these
+# out of the transcript, so this only has to send the command and wait for the
+# prompt -- matching the echoed PROBE text itself proved unreliable here.
 proc probe {name cmd} {
     set timeout 300
     send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
-    expect {
-        -re "PROBE:$name:\[^\r\n\]*" { }
-        timeout { send_user "\n\[replace.expect\] probe $name timed out\n" }
-    }
+    wait_prompt
 }
+
 
 probe poolhealthy "zpool status -x zroot"
 probe poolstate   "zpool list -H -o name,health"
 probe layout      "jq -c '{mode:.bootMode,n:(.bootDisks|length)}' /etc/nixos/disk-layout.json"
 probe members     "zpool status zroot | grep -c ONLINE"
 
-send -s "echo PROBES-DONE\r"
-expect { "PROBES-DONE" { } timeout { } }
+send_log "\n\[step\] probes done\n"
 
 send -s "poweroff\r"
 expect { "Power down" { } eof { } timeout { } }

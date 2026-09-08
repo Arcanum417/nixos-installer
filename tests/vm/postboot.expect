@@ -76,8 +76,8 @@ expect {
     timeout { bail 22 "no shell on the serial console after ${boot_timeout}s (did GRUB boot?)" }
 }
 
-send -s "dmesg -n 1; echo QUIET-OK\r"
-expect { "QUIET-OK" { } timeout { } }
+send -s "dmesg -n 1\r"
+wait_prompt
 
 set timeout $cmd_timeout
 
@@ -86,15 +86,24 @@ set timeout $cmd_timeout
 # Each probe is a single line so a command that fails cannot swallow the ones
 # after it. `|| echo ...` keeps a missing tool from hanging the expect loop.
 
-proc probe {name cmd} {
-    global cmd_timeout
-    set timeout $cmd_timeout
-    send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
+proc wait_prompt {} {
+    global spawn_id
     expect {
-        -re "PROBE:$name:\[^\r\n\]*" { }
-        timeout { send_user "\n\[postboot.expect\] probe $name timed out\n" }
+        -re {root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { }
     }
 }
+
+# Emit one PROBE:<name>:<value> line per fact. tests/vm-boot.sh parses these
+# out of the transcript, so this only has to send the command and wait for the
+# prompt -- matching the echoed PROBE text itself proved unreliable here.
+proc probe {name cmd} {
+    set timeout 300
+    send -s "echo PROBE:$name:\$( $cmd 2>/dev/null | tr '\\n' '~' | tr -d '\\r' )\r"
+    wait_prompt
+}
+
 
 probe hostname       "hostname"
 probe systemstate    "systemctl is-system-running || true"
@@ -113,11 +122,7 @@ probe forceimport    "cat /proc/cmdline | tr ' ' '~'"
 probe removable_efi  "ls /boot/EFI/BOOT/BOOTX64.EFI"
 probe health_check   "zfs-health-check || true"
 
-send -s "echo PROBES-DONE\r"
-expect {
-    "PROBES-DONE" { }
-    timeout { }
-}
+send_log "\n\[step\] probes done\n"
 
 send -s "poweroff\r"
 expect {
