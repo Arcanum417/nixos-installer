@@ -211,11 +211,17 @@ vm_write_config () {
     # an arm64 host, so QEMU runs in TCG. That is the whole reason this suite
     # is slow and opt-in.
     #
-    # ForceMulticore stays off and CPUCount stays at 4 because that is the
-    # configuration these tests have actually completed installs on. Whether
-    # turning it on helps is UNMEASURED -- do not assume either way.
+    # CPUCount is 8 because the install has real compiling to do and it does
+    # parallelise. disk-layout.nix sets boot.loader.grub.zfsSupport, which makes
+    # GRUB a derivation the binary cache does not have, so every install builds
+    # GRUB 2.12 from source -- under TCG that single derivation dominates the
+    # phase. Measured with 4 vCPUs: QEMULauncher sits at ~400%, i.e. all four
+    # threads saturated, on an 18-core host (12 performance) with the rest idle.
     #
-    # If you do measure it, sample the right process the right way. `QEMUHelper`
+    # ForceMulticore stays off: the four vCPU threads were already saturating
+    # without it, so it is not what gates throughput here.
+    #
+    # If you measure this, sample the right process the right way. `QEMUHelper`
     # is a wrapper and reads ~0% CPU; the emulator is `QEMULauncher`. And use
     # `top -l 2`, not `ps -o %cpu`, which on macOS is a decaying average since
     # process start -- it swings wildly and made a busy guest look idle, which
@@ -224,14 +230,14 @@ vm_write_config () {
     # Also note that long silences are normal, not stalls: `copying channel...`
     # and the closure copy print nothing for a long time while working.
     #
-    # What did measurably help was giving the guest less to *build* (see
-    # documentation.* in lib-assets.sh) rather than more cores to build on.
+    # The other thing that measurably helped was giving the guest less to build
+    # at all (see documentation.* in lib-assets.sh).
     jq -n \
         --arg name "$name" --arg uuid "$uuid" \
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
-        --argjson mem "${VM_MEM_MB:-8192}" --argjson cores "${VM_CORES:-4}" '{
+        --argjson mem "${VM_MEM_MB:-8192}" --argjson cores "${VM_CORES:-8}" '{
         Backend:              "QEMU",
         ConfigurationVersion: 4,
         Display:              [],

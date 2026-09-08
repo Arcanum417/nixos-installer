@@ -12,6 +12,7 @@ skip ()   { SKIPPED=$((SKIPPED+1)); printf "  ${_c_y}skip${_c_0} %s (%s)\n" "$1"
 eq ()       { if [ "$2" = "$3" ];  then _pass "$1"; else _fail "$1" "got [$2] want [$3]"; fi; }
 ne ()       { if [ "$2" != "$3" ]; then _pass "$1"; else _fail "$1" "both are [$2]"; fi; }
 contains () { case "$2" in *"$3"*) _pass "$1" ;; *) _fail "$1" "[$2] lacks [$3]" ;; esac; }
+lacks ()    { case "$2" in *"$3"*) _fail "$1" "[$2] contains [$3]" ;; *) _pass "$1" ;; esac; }
 between ()  { # between NAME VALUE LO HI
     if [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; then _pass "$1"
     else _fail "$1" "$2 not in [$3..$4]"; fi; }

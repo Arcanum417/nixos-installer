@@ -189,6 +189,11 @@ probe layout         "jq -c '{mode:.bootMode,n:(.bootDisks|length)}' /etc/nixos/
 probe hostid         "hostid"
 probe forceimport    "cat /proc/cmdline | tr ' ' '~'"
 
+# systemctl is-system-running says "degraded" when any unit failed, but not
+# which one. Naming them here is what makes that assertion actionable instead
+# of a dead end.
+probe failedunits    "systemctl --failed --no-legend --plain | tr -s ' '"
+
 # The UEFI promise: GRUB is installed at the removable path on every ESP, so
 # firmware finds it without an NVRAM entry pointing at a specific disk.
 # Check every ESP, not just /boot. The invariant is that GRUB is installed at

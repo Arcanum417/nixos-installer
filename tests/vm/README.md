@@ -75,11 +75,25 @@ Expect **hours, not minutes**, for a full run — `nixos-install` is building an
 activating a system closure under emulation. This is a release gate you run
 deliberately, not something to put in a pre-commit hook.
 
-What actually helps is giving the guest less to **build**. The fixture disables
-the NixOS manual and the man cache, which are generated per configuration and
-so are the only large derivations never available from the binary cache — with
-them on, the run spends a long stretch compiling inside an emulator; with them
-off it is dominated by downloads instead.
+Where the time actually goes, measured rather than guessed: **the install phase
+compiles GRUB from source.** `disk-layout.nix` sets
+`boot.loader.grub.zfsSupport = true` — GRUB has to be able to read the pool to
+boot off a ZFS root — and that produces a derivation the binary cache does not
+carry, so it is built in the guest, under emulation, once per firmware mode
+(the UEFI and BIOS builds differ in `efiSupport`, so they cannot share). Nothing
+in the test harness causes this and nothing can remove it: it is what installing
+this repo does. A real machine just does it in minutes instead of hours.
+
+That build does parallelise, which is why the guest gets 8 vCPUs. With 4,
+`QEMULauncher` measured ~400% — all four threads saturated — on an 18-core host
+(12 performance) that was otherwise idle. `nix` defaults `cores = 0`, so `make
+-j` follows the vCPU count on its own and needs no installer flag.
+`ForceMulticore` is not the lever; the vCPU threads were already saturated
+without it.
+
+The other thing that helps is giving the guest less to build at all. The fixture
+disables the NixOS manual and the man cache, which are generated per
+configuration and so are never available from the binary cache either.
 
 Two things to know before trying to tune this further:
 
