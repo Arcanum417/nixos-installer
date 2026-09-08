@@ -83,9 +83,10 @@ off it is dominated by downloads instead.
 
 Two things to know before trying to tune this further:
 
-- **Sample the right process.** `QEMUHelper` is a wrapper and always reads ~0%
-  CPU. The emulator is `QEMULauncher`, which sits around 300% during an
-  install. Watching the wrapper makes a healthy run look dead.
+- **Sample the right process, the right way.** `QEMUHelper` is a wrapper and
+  reads ~0% CPU; the emulator is `QEMULauncher`. And use `top -l 2` rather than
+  `ps -o %cpu`, which on macOS is a decaying average since process start and
+  swings wildly enough to make a busy guest look idle.
 - **Long silences are normal.** `copying channel...` and the closure copy print
   nothing for a long time while working, so a static transcript is not a hang.
 

@@ -206,10 +206,11 @@ vm_write_config () {
     # configuration these tests have actually completed installs on. Whether
     # turning it on helps is UNMEASURED -- do not assume either way.
     #
-    # If you do measure it, sample the right process. `QEMUHelper` is a wrapper
-    # and always reads ~0% CPU; the emulator is `QEMULauncher`, which runs at
-    # ~300% during an install. Watching the wrapper made a normal run look like
-    # a dead one and sent this investigation down a blind alley once already.
+    # If you do measure it, sample the right process the right way. `QEMUHelper`
+    # is a wrapper and reads ~0% CPU; the emulator is `QEMULauncher`. And use
+    # `top -l 2`, not `ps -o %cpu`, which on macOS is a decaying average since
+    # process start -- it swings wildly and made a busy guest look idle, which
+    # sent this investigation down a blind alley once already.
     #
     # Also note that long silences are normal, not stalls: `copying channel...`
     # and the closure copy print nothing for a long time while working.
