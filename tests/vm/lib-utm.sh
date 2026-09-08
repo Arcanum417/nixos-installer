@@ -216,6 +216,8 @@ vm_write_config () {
     #
     # What did measurably help was giving the guest less to *build* (see
     # documentation.* in lib-assets.sh) rather than more cores to build on.
+    jq -n \
+        --arg name "$name" --arg uuid "$uuid" \
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
