@@ -61,7 +61,7 @@ Phases are **sequential and stateful** — `boot` needs the disks `install` left
 previous run left the VM in place (`VM_KEEP=1`).
 
 Useful knobs: `DISK_GB` (default 8), `NDISKS` (default 3), `VM_MEM_MB` (4096),
-`VM_CORES` (4), `NIXOS_CHANNEL` (`nixos-25.05`).
+`VM_CORES` (8), `NIXOS_CHANNEL` (`nixos-25.05`).
 
 ### Budget the time
 
@@ -74,6 +74,11 @@ is no CSM on aarch64) and would exercise `BOOTAA64.EFI` rather than the
 Expect **hours, not minutes**, for a full run — `nixos-install` is building and
 activating a system closure under emulation. This is a release gate you run
 deliberately, not something to put in a pre-commit hook.
+
+The one lever that matters is UTM's `ForceMulticore`, which the harness always
+sets. Without it QEMU serialises TCG onto a single translation thread however
+many vCPUs the guest has; with it each vCPU gets its own. That is why
+`VM_CORES` defaults to 8 — raise it further on a machine with cores to spare.
 
 ## When something fails
 

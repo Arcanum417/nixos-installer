@@ -201,12 +201,17 @@ vm_write_config () {
     # Hypervisor is false and must stay false: the guest is x86_64 and this is
     # an arm64 host, so QEMU runs in TCG. That is the whole reason this suite
     # is slow and opt-in.
+    #
+    # ForceMulticore is therefore the one real speed lever. Without it QEMU
+    # serialises TCG onto a single translation thread no matter how many vCPUs
+    # the guest has, which makes nixos-install painfully slow; with it each
+    # vCPU gets its own thread. It is the reason CPUCount defaults to 8.
     jq -n \
         --arg name "$name" --arg uuid "$uuid" \
         --argjson uefi "$uefi" --argjson port "$serial_port" \
         --argjson drives "$drives" \
         --argjson args "$args" \
-        --argjson mem "${VM_MEM_MB:-4096}" --argjson cores "${VM_CORES:-4}" '{
+        --argjson mem "${VM_MEM_MB:-4096}" --argjson cores "${VM_CORES:-8}" '{
         Backend:              "QEMU",
         ConfigurationVersion: 4,
         Display:              [],
@@ -225,7 +230,7 @@ vm_write_config () {
                                 DirectoryShareReadOnly: true },
         Sound:                [],
         System:               { Architecture: "x86_64", CPU: "default", CPUCount: $cores,
-                                CPUFlagsAdd: [], CPUFlagsRemove: [], ForceMulticore: false,
+                                CPUFlagsAdd: [], CPUFlagsRemove: [], ForceMulticore: true,
                                 JITCacheSize: 0, MemorySize: $mem, Target: "q35" }
         }' > "$bundle/config.json"
 
