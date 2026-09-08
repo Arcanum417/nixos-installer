@@ -348,11 +348,29 @@ vm_blank_drive () { # vm_blank_drive NAME ID SIZE_GB
 # Eject both CDs and boot the disks, so the phase that claims to test the
 # bootloader cannot quietly boot the installer's kernel again.
 vm_boot_from_disk () { # vm_boot_from_disk NAME
-    local name=$1 vmid upid
+    local name=$1 vmid upid order
     vmid=$(_pve_vmid "$name")
-    upid=$(_pve_post "nodes/$PVE_NODE/qemu/$vmid/config" \
-        -d 'delete=ide0,ide2' \
-        --data-urlencode "boot=order=scsi0;scsi1;scsi2;scsi3" | jq -r '.data // empty')
+
+    # Build the boot order from the disks that actually exist. Naming a device
+    # that is not attached -- scsi3 before the replace phase adds it -- makes
+    # Proxmox store an *empty* boot order rather than dropping the unknown
+    # entry, and an empty order leaves OVMF with nothing to try: the guest
+    # lands in the UEFI Shell and the phase looks like a bootloader failure.
+    order=$(_pve_config "$vmid" | jq -r '
+        keys | map(select(test("^scsi[0-9]+$"))) | sort | join(";")')
+    [[ -n $order ]] || { echo "no scsi disks to boot from on $vmid" >&2; return 1; }
+
+    # Eject only the CDs that are still attached: this phase is re-runnable,
+    # and asking Proxmox to delete a key that is already gone is an error.
+    local cfg drop
+    cfg=$(_pve_config "$vmid")
+    drop=$(jq -rn --argjson c "$cfg" '
+        ["ide0","ide2"] | map(select(. as $k | $c | has($k))) | join(",")')
+
+    local -a args=(--data-urlencode "boot=order=$order")
+    [[ -n $drop ]] && args+=(-d "delete=$drop")
+
+    upid=$(_pve_post "nodes/$PVE_NODE/qemu/$vmid/config" "${args[@]}" | jq -r '.data // empty')
     _pve_wait_task "$upid" 120
 }
 
