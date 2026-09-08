@@ -64,12 +64,22 @@ proc reconnect_or_bail {} {
 serial_connect
 
 # ---------------------------------------------------------------- reach a shell
+#
+# The prompt to match is NOT the NixOS default. configuration.nix installs
+# starship and drives fish with it, so the installed system prompts like
+#
+#     root in ~
+#     >
+#
+# with a multi-byte glyph -- nothing like the ISO's plain `[root@nixos:~]#`.
+# What is stable and ASCII-safe is the OSC 133 prompt-start marker the shell
+# emits (ESC ] 133 ; A), so that is what these patterns key on, with the plain
+# bash prompt kept as an alternative for the installer environment.
 
 set timeout $boot_timeout
 send -s "\r"
 expect {
-    -re {root@[-a-z0-9]+:[^\r\n]*\]#} { }
-    -re {root@[-a-z0-9]+:[^\r\n]*\]\$} { }
+    -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
     "Emergency Mode"    { bail 20 "guest dropped into emergency mode" }
     "Failed to import"  { bail 21 "root pool did not import" }
     "Entering emergency shell" { bail 20 "guest dropped into emergency shell" }
@@ -99,7 +109,7 @@ set timeout $cmd_timeout
 proc wait_prompt {} {
     global spawn_id
     expect {
-        -re {root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
         eof     { reconnect_or_bail; send -s "\r"; exp_continue }
         timeout { }
     }
