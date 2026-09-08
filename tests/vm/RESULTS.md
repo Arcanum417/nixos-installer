@@ -9,58 +9,80 @@ NixOS `nixos-25.05` minimal ISO (x86_64), guest emulated under QEMU TCG.
 
 ## Where it stands
 
-The harness is complete and its host-side machinery is verified. **A full green
-end-to-end run has not been completed**, because a single `nixos-install` under
-TCG emulation runs for hours and the full matrix is two firmware modes × four
-phases. Do not read this suite as "passing" until someone runs it to completion
-and updates this file.
+**The `install` phase passes. The `boot` phase reaches the installed system and
+its facts are correct. `degraded` and `replace` have not been run to
+completion, and the whole `bios` matrix is untouched.**
+
+`install`, from a real run:
+
+```
+uefi
+  ok   uefi: guest serial port opens
+  ok   uefi: install-me.sh completes on a 3-disk mirror
+  ok   uefi: hostid was set before any pool existed
+  ok   uefi: pool is a mirror
+  ok   uefi: pools exported for a clean first import
+vm-boot: 8 checks, 0 failed, 0 skipped
+```
+
+`boot`, probes read off the installed system after it booted through its own
+GRUB off the mirror:
+
+```
+PROBE:hostname:vmtest-box          PROBE:systemstate:running
+PROBE:poolstate:zroot	ONLINE     PROBE:poolhealthy:pool 'zroot' is healthy
+PROBE:rootfs:zroot/root            PROBE:layout:{"mode":"uefi","n":3}
+PROBE:members_online:6             PROBE:degraded:0
+```
 
 | Component | Status |
 |---|---|
-| `.utm` bundle generation (drives, firmware, serial, sparse images) | verified working |
-| Firmware switching (`QEMU.UEFIBoot`) | verified — `efi_vars.fd` present only for UEFI |
-| Disk add / remove / blank between phases | verified working |
-| VM lifecycle (start, confirmed stop, destroy by prefix) | verified working |
-| Repo ISO built with `hdiutil` | verified working |
-| Installer ISO repacked for serial (`xorriso`) | verified working |
-| Guest reaches a serial console the harness can drive | verified |
-| Unattended drive-through to `nixos-install` | verified — see the trace below |
-| `install` phase reaching `INSTALLER-EXIT=0` | **not yet observed** |
-| `boot` → `degraded` → `replace` | **not yet run** |
+| `.utm` bundle generation, firmware switching, disk add/remove/blank | verified |
+| VM lifecycle (start, confirmed stop, destroy by prefix) | verified |
+| Repo ISO, installer ISO repack for serial | verified |
+| `install` phase | **passes, 8 checks** |
+| `boot` phase | installed system boots off the mirror; probes correct |
+| `degraded`, `replace` | **not yet run to completion** |
+| `bios` matrix | **not yet run** |
 
-The harness has been driven, unattended, from a cold VM to `nixos-install`
-running. From an actual `uefi install` run:
+## Two real defects these tests found
 
-```
-[step] got root shell, quieting kernel
-[step] shell responsive
-[step] mounting NIXINST
-[step] CD mounted
-[step] repo staged
-[step] launching install-me.sh
-  ok hostid set to deadbe01
-  firmware : uefi (GRUB installed as removable: EFI/BOOT/BOOTX64.EFI)
-  wiping /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_disk0
-  ZFS partitions end at sector 14680030 on every disk
-  ok all ZFS partitions are 5.0GiB
-      mirror-0                             ONLINE       0     0     0
-  "dataPool": null
- > Review /mnt/etc/nixos now if you want. Continue to nixos-install?  [Y/n]
- > Running nixos-install
-copying channel...
-```
+**`set_hostid` could not run on a NixOS ISO.** `/etc/hostid` there is a symlink
+into `/etc/static`, which lives in the read-only `/nix/store`, so both branches
+of `set_hostid` were writing *through* it and dying with `fopen: Read-only file
+system`. Since the hostId must be stamped into the pool labels before any pool
+exists, the installer could not get past its first step on the medium it is
+designed for. Nothing short of a real ISO boot reproduces this.
 
-So the whole chain works: UEFI firmware → repacked ISO → GRUB → kernel with a
-serial console → autologin → `sudo -i` → repo CD mounted by label → hostId set
-→ three disks partitioned → a real 3-way ZFS mirror ONLINE → `disk-layout.json`
-written → `nixos-install` started.
+**`utm_reload` hung indefinitely.** `osascript -e 'tell application "UTM" to
+quit'` has no timeout, so with UTM busy the harness deadlocked on its own
+AppleScript call and phases sat for tens of minutes without starting. This is
+what made runs look like a slow emulator rather than a stuck harness. Signals
+instead; `utm_reload` now returns in 1.5s.
 
-Worth noting the by-id paths that came back, because they were a design risk:
-`nvme-QEMU_NVMe_Ctrl_disk0` and friends are distinct per drive, so UTM's NVMe
-devices exercise `by_id_path` for real rather than collapsing to one symlink.
+## How long a run takes, and what was done about it
 
-What has **not** been observed is `nixos-install` finishing, and none of the
-three later phases has been run at all.
+The guest is x86_64 on an arm64 host, so QEMU emulates. Three things were
+measured and changed:
+
+- **Documentation is not in the binary cache.** The NixOS manual and the man
+  cache are generated per configuration, so they were the only large
+  derivations being *compiled* inside the emulator. Disabled in the fixture.
+- **The channel copy is the single slowest step.** `nixos-install` writes the
+  whole nixpkgs channel -- tens of thousands of small files -- into a fresh ZFS
+  pool. `install-me.sh` gained an opt-in `NIXOS_INSTALL_ARGS` hook so the suite
+  passes `--no-channel-copy`; real installs are unchanged.
+- **More vCPUs do not help.** See the note in `lib-utm.sh`: the guest workload
+  is serial, so multi-threaded TCG has nothing to spread.
+
+Even so, an install is hours of wall clock, and the remaining phases and the
+bios matrix are hours more. Treat this as an overnight release gate.
+
+Two measurement traps worth knowing, both of which sent this investigation
+down a blind alley: `QEMUHelper` is a wrapper that always reads ~0% CPU (the
+emulator is `QEMULauncher`), and `ps -o %cpu` on macOS is a decaying average
+since process start. Use `top -l 2`. A silent transcript is also not a hang --
+the closure copy and the build phase print nothing for long stretches.
 
 ## What does not work in UTM, and why
 
