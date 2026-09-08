@@ -84,12 +84,18 @@ proc wait_shell_ready {} {
     global spawn_id nudges
     set tok "SHELL-READY-7f3a"
     for {set i 0} {$i < 60} {incr i} {
-        send -s "echo $tok"
+        # UTM drops the serial TCP client whenever the guest reinitialises the
+        # UART, and that can land in the middle of this handshake. `send` on a
+        # closed spawn id raises "spawn id expN not open", which killed the
+        # whole phase with a Tcl stack trace instead of reconnecting. Treat a
+        # failed send as a drop and get the connection back.
+        if {[catch {send -s "echo $tok"}]} { reconnect_or_bail; continue }
         sleep 1
-        send "\r"
+        if {[catch {send "\r"}]} { reconnect_or_bail; continue }
         set timeout 20
         expect {
             -re "$tok\[^\r\n\]*\r" { return 1 }
+            eof     { reconnect_or_bail }
             timeout { }
         }
     }
@@ -104,12 +110,13 @@ proc wait_shell_ready {} {
 proc enter_bash {} {
     global spawn_id
     for {set i 0} {$i < 20} {incr i} {
-        send -s "exec bash --noprofile --norc"
+        if {[catch {send -s "exec bash --noprofile --norc"}]} { reconnect_or_bail; continue }
         sleep 1
-        send "\r"
+        if {[catch {send "\r"}]} { reconnect_or_bail; continue }
         set timeout 30
         expect {
             -re {RDY-4b91>} { return 1 }
+            eof     { reconnect_or_bail; continue }
             timeout { }
         }
         # Bracketed paste wraps typed input in escape sequences and readline
@@ -118,9 +125,10 @@ proc enter_bash {} {
         # else. Turn it off along with any line editing.
         send -s "PS1='RDY-4b91> '; bind 'set enable-bracketed-paste off' 2>/dev/null; set +o emacs 2>/dev/null"
         sleep 1
-        send "\r"
+        if {[catch {send "\r"}]} { reconnect_or_bail; continue }
         expect {
             -re {RDY-4b91>} { return 1 }
+            eof     { reconnect_or_bail }
             timeout { }
         }
     }
@@ -264,9 +272,15 @@ proc probe {name cmd} {
     # branch captured instead. That silently blanked the zfs-health-check
     # probe, because a health check naturally exits non-zero when unhealthy.
     # Text first, then a separate Return once fish has stopped redrawing.
-    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )"
+    # Guarded like the handshake: a serial drop mid-probe otherwise raises
+    # "spawn id expN not open" and takes the whole phase down with a Tcl stack
+    # trace, losing every probe that would have followed.
+    if {[catch {send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )"}]} {
+        reconnect_or_bail
+        return
+    }
     sleep 1
-    send "\r"
+    if {[catch {send "\r"}]} { reconnect_or_bail; return }
     wait_prompt
 }
 
