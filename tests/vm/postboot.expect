@@ -61,6 +61,15 @@ proc reconnect_or_bail {} {
     serial_connect
 }
 
+proc wait_prompt {} {
+    global spawn_id
+    expect {
+        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { }
+    }
+}
+
 serial_connect
 
 # ---------------------------------------------------------------- reach a shell
@@ -106,14 +115,6 @@ set timeout $cmd_timeout
 # Each probe is a single line so a command that fails cannot swallow the ones
 # after it. `|| echo ...` keeps a missing tool from hanging the expect loop.
 
-proc wait_prompt {} {
-    global spawn_id
-    expect {
-        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
-        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
-        timeout { }
-    }
-}
 
 # Emit one PROBE:<name>:<value> line per fact. tests/vm-boot.sh parses these
 # out of the transcript, so this only has to send the command and wait for the
