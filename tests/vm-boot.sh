@@ -56,6 +56,17 @@ ISO=$(fetch_iso) || { echo "could not fetch the NixOS ISO"; exit 77; }
 if [[ -s $ISO ]]; then _pass "installer ISO cached ($(du -h "$ISO" | cut -f1))"
 else _fail "installer ISO cached" "$ISO is empty"; summary "vm-boot"; exit 1; fi
 
+# Cheap gate in front of an expensive suite. The guest cannot report a bad
+# configuration until nixos-install runs, which is an hour of emulation in;
+# nix-instantiate says the same thing in two seconds. Bail rather than skip:
+# every later phase depends on an install that cannot succeed.
+if FIXTURE_ERR=$(fixture_evaluates "$ROOT"); then
+    _pass "generated configuration evaluates"
+else
+    _fail "generated configuration evaluates" "$FIXTURE_ERR"
+    summary "vm-boot"; exit 1
+fi
+
 REPO_ISO="$WORK/repo.iso"
 if build_repo_iso "$ROOT" "$REPO_ISO"; then _pass "repo ISO built"
 else _fail "repo ISO built" "hdiutil makehybrid failed"; summary "vm-boot"; exit 1; fi

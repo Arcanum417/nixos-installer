@@ -163,6 +163,65 @@ repack_iso_for_serial () { # repack_iso_for_serial ISO OUT
     [[ -s $out ]]
 }
 
+# Evaluate configuration.nix against the generated fixture before any VM
+# starts.
+#
+# This guard exists because it was needed. The fixture overrides options that
+# configuration.nix and zfs-health.nix already define, and without lib.mkForce
+# the module system refuses to merge them. nothing notices until nixos-install
+# runs inside the guest, which is an hour of emulation away -- and it then
+# fails for both firmware modes, so the whole suite is wasted on a one-line
+# mistake that nix-instantiate reports in about a second.
+#
+# Evaluation only, no build: the host is arm64 macOS and cannot build a Linux
+# closure, but it can evaluate one. Missing nixpkgs is not a failure, it just
+# means the suite runs without the guard.
+fixture_evaluates () { # fixture_evaluates REPO_ROOT [-> error text on stdout]
+    local root=$1 work nixpkgs out
+    command -v nix-instantiate >/dev/null || return 0
+    nixpkgs=${NIXPKGS:-$(nix-instantiate --find-file nixpkgs 2>/dev/null)}
+    [[ -n $nixpkgs && -d $nixpkgs ]] || return 0
+
+    work=$(mktemp -d)
+    cp "$root"/configuration.nix "$root"/disk-layout.nix "$root"/zfs-health.nix "$work/"
+    cp "$root"/tests/fixtures/hardware-configuration.nix "$work/"
+    write_test_unique_nix "$work/unique.nix"
+
+    # disk-layout.nix reads this; the shape matters, the disk names do not.
+    # The globals below are consumed by write_disk_layout_json in
+    # lib/common.sh, which the linter cannot see through the dynamic call.
+    # shellcheck disable=SC2034
+    ( # shellcheck source=../../lib/common.sh
+      source "$root/lib/common.sh"
+      set +e; trap - ERR
+      BOOT_MODE=uefi ROOT_POOL=zroot STATE_VERSION=25.05
+      set_part_numbers uefi
+      BOOT_DISKS=() BOOT_MPS=()
+      local i
+      for (( i = 0; i < 3; i++ )); do
+          BOOT_DISKS+=("/dev/disk/by-id/ata-PREFLIGHT_$i")
+          BOOT_MPS+=("$(boot_mount_point "$i")")
+      done
+      DATA_POOL_JSON=null
+      write_disk_layout_json "$work/disk-layout.json" )
+
+    cat > "$work/eval.nix" <<EOF
+(import $nixpkgs/nixos/lib/eval-config.nix {
+  system = "x86_64-linux";
+  modules = [ ./configuration.nix ];
+}).config
+EOF
+    # Force the whole toplevel derivation path: that is what nixos-install
+    # builds, so anything the module system rejects surfaces here too.
+    if out=$( cd "$work" && nix-instantiate --eval --strict \
+                  -E '(import ./eval.nix).system.build.toplevel.drvPath' 2>&1 ); then
+        rm -rf "$work"; return 0
+    fi
+    printf '%s\n' "$out" | grep -a '^ *error' | head -3
+    rm -rf "$work"
+    return 1
+}
+
 # Everything install-me.sh reads from SCRIPT_DIR, plus the generated
 # unique.nix, as an ISO9660 image. hdiutil is stock macOS, so the suite needs
 # nothing installed.
