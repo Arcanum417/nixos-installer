@@ -128,58 +128,49 @@ send_log "\n\[step\] repo staged\n"
 # ---------------------------------------------------------------- run it
 
 send_log "\n\[step\] launching install-me.sh\n"
-send -s "cd /root/repo && ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
 
-# The installer's prompts do not arrive in a fixed order across firmware modes
-# and pool states, so match on whichever comes next rather than assuming a
-# script. Each branch re-enters the loop with exp_continue.
-set disks_picked 0
+# Answers are fed on stdin rather than typed in response to each prompt.
+#
+# Matching the prompts was the original design and mostly worked -- the disk
+# menu and the DESTROY confirmation were driven that way -- but two prompts
+# ("[Y/n]" from confirm, and an echoed shell marker) could not be matched at
+# all on this console. expect demonstrably *read* them, they appear in the
+# transcript, and neither a glob nor an -re pattern ever fired. Feeding stdin
+# sidesteps prompt matching entirely.
+#
+# The usual objection to this -- a misaligned answer picks the wrong disk to
+# wipe -- does not apply here: every disk in the VM is a scratch image. On real
+# hardware you would never drive the installer this way.
+#
+# The sequence below is exact for "UEFI, N disks, no data pool":
+#
+#   1..N     select_disks toggles each disk           (one line each)
+#   d        select_disks done                        (one line)
+#   3        ask DATA_CHOICE -> skip the data pool    (one line)
+#   DESTROY  confirm_hard                             (one line)
+#   y        confirm "Does the pool above look right?"   (read -n 1)
+#   <blank>  confirm "Continue to nixos-install?"        (read -n 1 sees the
+#            newline left over by the previous answer; empty is not [Nn], so
+#            confirm treats it as yes)
+set answers ""
+for {set i 1} {$i <= $ndisks} {incr i} { append answers "$i\\n" }
+append answers "d\\n3\\nDESTROY\\ny\\n"
+
+send -s "cd /root/repo && printf '$answers' | ./install-me.sh; echo INSTALLER-EXIT=\$?\r"
+
 set timeout $install_timeout
 
-# NOTE: no comments inside this expect block. Tcl does not treat "#" as a
-# comment in a pattern list -- each such line would become a live pattern
-# ("#", "An", "pool", ...) and match stray output. Every branch is explained
-# here instead:
-#
-#   "so the disks can be examined"  a pool left imported by an earlier phase
-#   "number toggles, d when done"   select_disks; toggle 1..N then d. Guarded
-#                                   by disks_picked so the replacement-disk
-#                                   menu cannot re-trigger it
-#   "choose [3]: "                  ask DATA_CHOICE; 3 = skip the data pool
-#   "anything else aborts"          confirm_hard; matched on the uncoloured
-#                                   tail because DESTROY itself is bolded
-#   "Y/n"                           confirm; pool-looks-right and pre-install
-#   "FATAL"                         lib/common.sh die()
+# Watched, not driven: the installer is answering itself from stdin now, so
+# these patterns only need to notice how it ended.
 expect {
-    "so the disks can be examined" {
-        send -s "y"; exp_continue
-    }
-    "number toggles, d when done" {
-        if {$disks_picked < $ndisks} {
-            incr disks_picked
-            send -s "$disks_picked\r"
-        } else {
-            send -s "d\r"
-        }
-        exp_continue
-    }
-    -re {choose \[3\]: } {
-        send -s "3\r"; exp_continue
-    }
-    "anything else aborts" {
-        send -s "DESTROY\r"; exp_continue
-    }
-    "Y/n" {
-        send -s "y"; exp_continue
-    }
-    "FATAL" {
-        bail 13 "installer aborted with a FATAL"
-    }
-    "INSTALLER-EXIT=0" {
+    -re {INSTALLER-EXIT=0} {
         send_log "\n\[step\] installer finished cleanly\n"
     }
-    -re {INSTALLER-EXIT=([1-9][0-9]*)} {
+    -re {INSTALLER-EXIT=[1-9]} {
         bail 14 "install-me.sh exited non-zero"
+    }
+    -re {FATAL} {
+        bail 13 "installer aborted with a FATAL"
     }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout { bail 15 "installer timed out after ${install_timeout}s" }

@@ -24,11 +24,12 @@ and updates this file.
 | Repo ISO built with `hdiutil` | verified working |
 | Installer ISO repacked for serial (`xorriso`) | verified working |
 | Guest reaches a serial console the harness can drive | verified |
-| Unattended drive-through to the installer | verified — see the step trace below |
-| `install` → `boot` → `degraded` → `replace` end to end | **not yet run to completion** |
+| Unattended drive-through to `nixos-install` | verified — see the trace below |
+| `install` phase reaching `INSTALLER-EXIT=0` | **not yet observed** |
+| `boot` → `degraded` → `replace` | **not yet run** |
 
-The harness has been driven, unattended, all the way from a cold VM to the
-installer running. This step trace is from an actual `uefi install` run:
+The harness has been driven, unattended, from a cold VM to `nixos-install`
+running. From an actual `uefi install` run:
 
 ```
 [step] got root shell, quieting kernel
@@ -37,13 +38,29 @@ installer running. This step trace is from an actual `uefi install` run:
 [step] CD mounted
 [step] repo staged
 [step] launching install-me.sh
+  ok hostid set to deadbe01
+  firmware : uefi (GRUB installed as removable: EFI/BOOT/BOOTX64.EFI)
+  wiping /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_disk0
+  ZFS partitions end at sector 14680030 on every disk
+  ok all ZFS partitions are 5.0GiB
+      mirror-0                             ONLINE       0     0     0
+  "dataPool": null
+ > Review /mnt/etc/nixos now if you want. Continue to nixos-install?  [Y/n]
+ > Running nixos-install
+copying channel...
 ```
 
-That covers: UEFI firmware → repacked ISO → GRUB → kernel with a serial
-console → autologin as `nixos` → `sudo -i` → mounting the repo CD by label →
-staging the repo → launching `install-me.sh`. What has *not* been observed is
-everything after that: the disk menu being answered, the pool being built, and
-`nixos-install` completing.
+So the whole chain works: UEFI firmware → repacked ISO → GRUB → kernel with a
+serial console → autologin → `sudo -i` → repo CD mounted by label → hostId set
+→ three disks partitioned → a real 3-way ZFS mirror ONLINE → `disk-layout.json`
+written → `nixos-install` started.
+
+Worth noting the by-id paths that came back, because they were a design risk:
+`nvme-QEMU_NVMe_Ctrl_disk0` and friends are distinct per drive, so UTM's NVMe
+devices exercise `by_id_path` for real rather than collapsing to one symlink.
+
+What has **not** been observed is `nixos-install` finishing, and none of the
+three later phases has been run at all.
 
 ## What does not work in UTM, and why
 
