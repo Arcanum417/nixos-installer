@@ -92,6 +92,14 @@ expect {
     "Emergency Mode"    { bail 20 "guest dropped into emergency mode" }
     "Failed to import"  { bail 21 "root pool did not import" }
     "Entering emergency shell" { bail 20 "guest dropped into emergency shell" }
+    -re {.+} {
+        # Any console output at all means the guest is alive -- firmware still
+        # searching, systemd still starting units. Reset the silence counter
+        # and keep waiting. Without this the budget below was really a cap on
+        # total boot time, so a slow-but-healthy boot got failed as a dead one.
+        set nudges 0
+        exp_continue
+    }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
     timeout {
         # Nudge the getty and keep waiting. One newline before the boot has
@@ -102,7 +110,7 @@ expect {
         # 120 cycles, not 40. A 20-minute budget was not enough: the replace
         # phase's guest boots but crawls, and exhausting the nudges made a slow
         # boot indistinguishable from a dead one. An hour is still bounded.
-        if {$nudges > 120} { bail 22 "no shell on the serial console after ~1h of nudging (did GRUB boot?)" }
+        if {$nudges > 120} { bail 22 "console silent for ~1h and no shell (did GRUB boot?)" }
         send -s "\r"
         exp_continue
     }
