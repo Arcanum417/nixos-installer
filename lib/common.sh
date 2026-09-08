@@ -72,6 +72,14 @@ set_hostid () {
     local id=$1
     [[ $id =~ ^[0-9a-fA-F]{8}$ ]] || die "hostId must be exactly 8 hex digits, got '$id'"
     id=${id,,}
+    # On a NixOS live ISO /etc/hostid already exists as a symlink into
+    # /etc/static, which lives in the read-only /nix/store. Writing *through*
+    # that symlink fails with "fopen: Read-only file system" and takes the
+    # installer down at its first step. /etc itself is a tmpfs and is
+    # writable, so drop the symlink and let a real file be created in its
+    # place. (Found by tests/vm-boot.sh; nothing short of a real ISO boot
+    # reproduces it.)
+    rm -f /etc/hostid
     if command -v zgenhostid >/dev/null 2>&1; then
         zgenhostid -f "$id"
     else
