@@ -307,9 +307,14 @@ vm_remove_drive () {
 }
 
 # vm_readd_drive NAME IDENTIFIER  -- put a previously removed disk back.
+#
+# Idempotent: any existing entry for this Identifier is dropped first. Without
+# that, re-running a phase appends a second copy and QEMU refuses to start the
+# VM at all -- "Duplicate ID 'drivedisk3' for drive" -- which presents as
+# vm_start failing for no visible reason.
 vm_readd_drive () {
     local name=$1 id=$2 drives
-    drives=$(vm_drives "$name" | jq --arg id "$id" '. + [{
+    drives=$(vm_drives "$name" | jq --arg id "$id" 'map(select(.Identifier != $id)) + [{
         Identifier: $id, ImageName: ($id + ".img"), ImageType: "Disk",
         Interface: "NVMe", InterfaceVersion: 1, ReadOnly: false }]')
     vm_rewrite "$name" "$drives"
