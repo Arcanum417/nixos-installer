@@ -62,11 +62,20 @@ in the committed code but **have not yet been re-verified by a run**:
 
 ### Not yet established
 
-- **`replace`.** The phase starts, but with disk0 still pulled and a blank
-  disk3 attached the guest sits in firmware without reaching a shell (a run of
-  dots on the console, no progress in two hours). Whether that is OVMF boot-order
-  behaviour in this emulator or something real is **unresolved** -- do not read
-  it either way.
+- **`replace`.** The phase starts and the guest does boot -- the earlier "stuck
+  in firmware" reading was wrong, it was just slow. What it then does is crawl:
+  the console sat on
+
+  ```
+  A start job is running for Network Time Synchronization (47s / 1min 30s)
+  ```
+
+  advancing roughly 23 *guest* seconds across several hours of wall clock. The
+  host was not the problem (load 2.9 on 18 cores, QEMU holding ~200% CPU), so
+  the guest was executing, just far slower than the other phases. Cause
+  **unresolved**. The fixture now disables timesyncd and the scrub timer, which
+  removes two known sinks, but that has not been re-tested. `replace` has never
+  reached `replace-boot-disk.sh`.
 - **The whole `bios` matrix.** Never run.
 - **A clean re-run of `uefi`** with the two harness fixes in place.
 
