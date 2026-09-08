@@ -62,32 +62,31 @@ in the committed code but **have not yet been re-verified by a run**:
 
 ### Not yet established
 
-- **`replace`.** Now gets furthest of all the attempts: the guest boots, the
-  driver reaches a shell, and it launches `/etc/nixos/replace-boot-disk.sh`.
-  The script then prints **nothing at all** and the phase sits until its
-  timeout.
+- **`replace`.** Root-caused, fixed, not yet re-verified.
 
-  Narrowing done so far, so it is not repeated:
+  The phase reached a shell, typed its command, and sat there. Attaching to
+  the console showed exactly why:
 
-  - The shell really was reached, and the command really was sent. The OSC 133
-    prompt markers bracket the send in the transcript, and more appear after
-    it, so this is not a premature pattern match.
-  - It is not `need_cmds` failing. `configuration.nix` installs `gptfdisk`,
-    `jq`, `dosfstools` and `e2fsprogs` explicitly for this script, and a
-    `need_cmds` failure would `die` with a visible FATAL and a non-zero
-    `REPLACE-EXIT` anyway. Neither appears.
-  - It is not the host. Load stayed at 2.9 on 18 cores with QEMU holding
-    ~200%, and the disk images are 6 GiB actual, so neither CPU nor host I/O
-    is starved.
+  ```
+  root in ~
+  > printf ... | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=$?
+  ```
 
-  The remaining suspect is the script's first real work -- `read_disk_layout`
-  then `zpool status -P zroot` -- blocking with one mirror member missing and
-  one blank disk attached. **Unconfirmed:** checking it needs the serial
-  console, which the driver holds for the duration. Attach to a VM left by
-  `VM_KEEP=1` and run `zpool status` by hand to settle it.
+  The command was sitting on the prompt line, never executed. The installed
+  system runs **fish with starship**, which redraws the prompt after every
+  keystroke -- the transcript is full of bracketed-paste toggles and cursor-up
+  sequences. A `\r` appended to the end of a slow-typed command gets eaten by
+  that redraw and nothing is submitted. The ISO runs plain bash and does not
+  do this, which is why the install phase always worked, only the phases that
+  talk to the installed system hung, and the shorter probe commands mostly got
+  through.
 
-  An earlier note in this file said the guest "sits in firmware without
-  reaching a shell". That was wrong; it boots, and slowly.
+  The drivers now type the text, sleep so fish settles, then send Return on
+  its own. **Not yet confirmed by a run.**
+
+  Two earlier notes in this file were wrong and are corrected: the guest does
+  not "sit in firmware" (it boots), and the hang was not `zpool status`
+  blocking on a missing disk (the script never ran at all).
 
 - **The whole `bios` matrix.** Never run.
 - **A clean re-run of `uefi`** with the two harness fixes in place.
