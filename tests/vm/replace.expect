@@ -69,6 +69,33 @@ proc wait_prompt {} {
     }
 }
 
+# Prove the shell is actually reading, not just that a prompt marker appeared.
+#
+# Matching the first OSC 133 marker is not enough: the getty emits it before
+# the shell is interactive, so a command typed at that point goes into
+# something that is not yet reading it and is silently lost. That is what left
+# the replace phase with its command sitting unexecuted on the prompt line
+# while systemd carried on printing unit messages.
+#
+# So: echo a token and require it back. Short commands submit reliably even
+# when longer ones do not, and getting the token proves the shell will run
+# what we send next.
+proc wait_shell_ready {} {
+    global spawn_id nudges
+    set tok "SHELL-READY-7f3a"
+    for {set i 0} {$i < 60} {incr i} {
+        send -s "echo $tok"
+        sleep 1
+        send "\r"
+        set timeout 20
+        expect {
+            -re "$tok\[^\r\n\]*\r" { return 1 }
+            timeout { }
+        }
+    }
+    return 0
+}
+
 serial_connect
 
 # ---------------------------------------------------------------- reach a shell
@@ -87,7 +114,11 @@ serial_connect
 set timeout $boot_timeout
 send -s "\r"
 expect {
-    -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} { }
+    -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#} {
+        if {![wait_shell_ready]} {
+            bail 24 "a prompt appeared but the shell never echoed a token back"
+        }
+    }
     "Emergency Mode" { bail 20 "guest dropped into emergency mode" }
     -re {.+} {
         # Any console output at all means the guest is alive -- firmware still
