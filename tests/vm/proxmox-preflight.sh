@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Checks everything the Proxmox backend needs, without creating a VM.
+#
+#   bash tests/vm/proxmox-preflight.sh
+#
+# Every check that can fail prints what to do about it. Exits 0 when a real run
+# has a chance of working, 1 otherwise. Reads configuration the same way the
+# suite does, so a pass here means the suite sees the same thing.
+#
+# It deliberately stops short of creating anything. The point is to separate
+# "cannot reach the node" from "the suite has a bug", which are otherwise easy
+# to confuse an hour into a run.
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$(dirname "$HERE")")"
+# shellcheck source=../assert.sh
+source "$ROOT/tests/assert.sh"
+set +e
+
+# Optional env file, so nothing secret has to live in a shell history.
+PVE_ENV=${PVE_ENV:-$HOME/.config/nixos-installer-vm/proxmox.env}
+if [[ -r $PVE_ENV ]]; then
+    # shellcheck disable=SC1090
+    source "$PVE_ENV"
+    echo "config: $PVE_ENV"
+else
+    echo "config: none at $PVE_ENV (using the environment)"
+fi
+
+# shellcheck source=lib-proxmox.sh
+source "$HERE/lib-proxmox.sh"
+
+section "local tools"
+for c in curl jq ssh expect xorriso; do
+    if command -v "$c" >/dev/null; then _pass "$c present"
+    elif [[ $c == xorriso ]]; then
+        skip "xorriso present" "needed to repack the installer ISO: nix-shell -p xorriso"
+    else
+        _fail "$c present" "install $c"
+    fi
+done
+
+section "configuration"
+for v in PVE_HOST PVE_NODE PVE_TOKEN_FILE; do
+    if [[ -n ${!v-} ]]; then _pass "$v is set (${!v})"
+    else _fail "$v is set" "export $v=... or put it in $PVE_ENV"; fi
+done
+_pass "storage for disks: $PVE_STORAGE"
+_pass "storage for ISOs:  $PVE_ISO_STORAGE"
+_pass "bridge:            $PVE_BRIDGE"
+_pass "VMID band:         $PVE_VMID_BASE-$(( PVE_VMID_BASE + PVE_VMID_SPAN - 1 )) (tag $PVE_TAG)"
+
+if [[ -z ${PVE_HOST-} || -z ${PVE_NODE-} || -z ${PVE_TOKEN_FILE-} ]]; then
+    summary "proxmox-preflight"; exit 1
+fi
+
+section "token file"
+if [[ -r $PVE_TOKEN_FILE ]]; then
+    _pass "readable: $PVE_TOKEN_FILE"
+    perm=$(stat -f '%Lp' "$PVE_TOKEN_FILE" 2>/dev/null || stat -c '%a' "$PVE_TOKEN_FILE" 2>/dev/null)
+    case $perm in
+        600|400) _pass "permissions are $perm" ;;
+        *) skip "permissions are tight" "$perm -- it holds a credential, consider chmod 600" ;;
+    esac
+    # Shape only. The secret itself is never echoed.
+    if grep -qE '^Authorization: PVEAPIToken=[^!]+![^=]+=[0-9a-fA-F-]+[[:space:]]*$' "$PVE_TOKEN_FILE"; then
+        _pass "contents look like a PVEAPIToken header"
+    else
+        _fail "contents look like a PVEAPIToken header" \
+              "expected one line: Authorization: PVEAPIToken=USER@REALM!TOKENID=UUID"
+    fi
+else
+    _fail "readable: $PVE_TOKEN_FILE" "create it, see tests/vm/README-proxmox.md"
+    summary "proxmox-preflight"; exit 1
+fi
+
+section "API"
+if ver=$(_pve_get version 2>&1); then
+    _pass "authenticated: PVE $(jq -r '.data.version // "?"' <<<"$ver" 2>/dev/null)"
+else
+    _fail "authenticated" "$(head -c 300 <<<"$ver")
+  If this is a TLS complaint, the node has a self-signed cert: export PVE_INSECURE=1"
+    summary "proxmox-preflight"; exit 1
+fi
+
+if nodes=$(_pve_get nodes 2>/dev/null); then
+    if jq -e --arg n "$PVE_NODE" '.data | any(.node == $n)' <<<"$nodes" >/dev/null; then
+        _pass "node '$PVE_NODE' exists"
+    else
+        _fail "node '$PVE_NODE' exists" \
+              "known nodes: $(jq -r '.data | map(.node) | join(", ")' <<<"$nodes")"
+    fi
+fi
+
+section "storage"
+for pair in "$PVE_STORAGE:images" "$PVE_ISO_STORAGE:iso"; do
+    st=${pair%%:*}; want=${pair##*:}
+    if got=$(_pve_get "nodes/$PVE_NODE/storage" 2>/dev/null \
+             | jq -r --arg s "$st" '.data[] | select(.storage == $s) | .content'); then
+        if [[ -z $got ]]; then
+            _fail "storage '$st' is available on $PVE_NODE" \
+                  "not present; available: $(_pve_get "nodes/$PVE_NODE/storage" | jq -r '.data|map(.storage)|join(", ")')"
+        elif [[ $got == *"$want"* ]]; then
+            _pass "storage '$st' accepts $want"
+        else
+            _fail "storage '$st' accepts $want" "its content types are: $got"
+        fi
+    fi
+done
+
+section "VMID band is free"
+for off in 1 2; do
+    vmid=$(( PVE_VMID_BASE + off ))
+    if cfg=$(_pve_get "nodes/$PVE_NODE/qemu/$vmid/config" 2>/dev/null); then
+        tags=$(jq -r '.data.tags // ""' <<<"$cfg")
+        case ",$tags," in
+            *",$PVE_TAG,"*) _pass "$vmid exists and is one of ours (tag $PVE_TAG)" ;;
+            *) _fail "$vmid is free or ours" \
+                     "VM $vmid exists WITHOUT the '$PVE_TAG' tag -- the suite will refuse to touch it.
+  Move it, or point the suite elsewhere with PVE_VMID_BASE." ;;
+        esac
+    else
+        _pass "$vmid is free"
+    fi
+done
+
+section "ssh to the node (for the serial console)"
+dest=$(_pve_ssh)
+if ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$dest" true 2>/dev/null; then
+    _pass "ssh $dest works without a prompt"
+    if ssh -T -o BatchMode=yes "$dest" 'command -v socat' >/dev/null 2>&1; then
+        _pass "socat present on the node"
+    else
+        _fail "socat present on the node" "apt install socat -- the serial console goes through it"
+    fi
+    if ssh -T -o BatchMode=yes "$dest" 'test -d /var/run/qemu-server' 2>/dev/null; then
+        _pass "/var/run/qemu-server exists (where the console sockets appear)"
+    else
+        skip "/var/run/qemu-server exists" "created when a VM first starts; not an error on an idle node"
+    fi
+else
+    _fail "ssh $dest works without a prompt" \
+          "ssh-copy-id $dest, and check BatchMode works (no passphrase prompt).
+  Override the destination with PVE_SSH if it differs from PVE_HOST."
+fi
+
+section "KVM (the reason to use this backend)"
+if kvm=$(ssh -T -o BatchMode=yes "$dest" 'test -e /dev/kvm && echo yes || echo no' 2>/dev/null); then
+    if [[ $kvm == yes ]]; then
+        arch=$(ssh -T -o BatchMode=yes "$dest" 'uname -m' 2>/dev/null)
+        if [[ $arch == x86_64 ]]; then
+            _pass "node is x86_64 with /dev/kvm -- the guest will be accelerated"
+        else
+            skip "node is x86_64" "node reports '$arch'; an x86_64 guest there would be emulated, like UTM"
+        fi
+    else
+        skip "/dev/kvm on the node" "no KVM: the guest will be emulated and slow"
+    fi
+fi
+
+summary "proxmox-preflight"
