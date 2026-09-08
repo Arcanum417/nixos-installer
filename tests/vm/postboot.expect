@@ -130,7 +130,10 @@ proc probe {name cmd} {
     # that exits non-zero has its output thrown away and the empty true
     # branch captured instead. That silently blanked the zfs-health-check
     # probe, because a health check naturally exits non-zero when unhealthy.
-    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )\r"
+    # Text first, then a separate Return once fish has stopped redrawing.
+    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )"
+    sleep 1
+    send "\r"
     wait_prompt
 }
 

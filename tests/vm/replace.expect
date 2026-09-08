@@ -120,7 +120,15 @@ wait_prompt
 #   y        confirm "Delete its contents?" (leftovers written to the root
 #            pool while the disk was missing; harmless if not asked)
 send_log "\n\[step\] running replace-boot-disk.sh\n"
-send -s "printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=\$?\r"
+# Type the command, let fish finish redrawing, then submit with a separate
+# Return. The installed system runs fish with starship, which redraws the
+# prompt after every keystroke; a \r tacked onto the end of a slow-typed
+# command gets eaten by that redraw and the command sits on the prompt line
+# unexecuted. The ISO's plain bash does not do this, which is why only the
+# phases that talk to the installed system were affected.
+send -s "printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo REPLACE-EXIT=\$?"
+sleep 2
+send "\r"
 
 set timeout $replace_timeout
 expect {
@@ -155,7 +163,10 @@ proc probe {name cmd} {
     # that exits non-zero has its output thrown away and the empty true
     # branch captured instead. That silently blanked the zfs-health-check
     # probe, because a health check naturally exits non-zero when unhealthy.
-    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )\r"
+    # Text first, then a separate Return once fish has stopped redrawing.
+    send -s "echo PROBE:$name:\$( { $cmd ; } 2>&1 | tr '\\n' '~' | tr -d '\\r' )"
+    sleep 1
+    send "\r"
     wait_prompt
 }
 
