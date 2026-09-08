@@ -1,6 +1,31 @@
 # shellcheck shell=bash
 # Host-side UTM control for the VM boot tests. Sourced, never executed.
 #
+# This file is one *backend* behind a small contract. tests/vm-boot.sh holds the
+# phases and the assertions and calls only these thirteen functions, so the same
+# suite can drive a different hypervisor by supplying another implementation:
+#
+#   utm_available                     backend usable here? (77/skip if not)
+#   vm_define NAME FIRMWARE NDISKS DISK_GB PORT BOOT_ISO REPO_ISO
+#   vm_exists NAME
+#   vm_start NAME
+#   vm_kill NAME                      stop now, do not wait for the guest
+#   vm_wait_stopped NAME TIMEOUT      the guest is powering itself off
+#   vm_destroy_all                    only names carrying VM_PREFIX
+#   vm_remove_drive NAME ID           pull a disk
+#   vm_readd_drive NAME ID            put one back (idempotent)
+#   vm_blank_drive NAME ID SIZE_GB    a fresh empty disk
+#   vm_boot_from_disk NAME            eject the CDs, boot the installed system
+#   vm_serial_ready PORT TRIES        the guest's console is accepting a client
+#   utm_reload                        publish config changes to the hypervisor
+#
+# Two of those exist only because of how UTM behaves and would be trivial
+# elsewhere: `utm_reload` (UTM caches VM configuration in memory from launch, so
+# an edited plist is ignored until it is restarted) and the TCP port in
+# `vm_serial_ready` (UTM exposes a guest serial device as a listening socket
+# that accepts exactly one client). A backend whose API applies configuration
+# immediately can make `utm_reload` a no-op.
+#
 # UTM has two scripting surfaces and neither is sufficient alone:
 #
 #   - AppleScript `make new virtual machine` creates a VM and can size drives,
