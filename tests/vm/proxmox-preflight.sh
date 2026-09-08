@@ -48,6 +48,7 @@ done
 _pass "storage for disks: $PVE_STORAGE"
 _pass "storage for ISOs:  $PVE_ISO_STORAGE"
 _pass "bridge:            $PVE_BRIDGE"
+_pass "disk cache mode:   $PVE_DISK_CACHE"
 _pass "VMID band:         $PVE_VMID_BASE-$(( PVE_VMID_BASE + PVE_VMID_SPAN - 1 )) (tag $PVE_TAG)"
 
 if [[ -z ${PVE_HOST-} || -z ${PVE_NODE-} || -z ${PVE_TOKEN_FILE-} ]]; then
@@ -90,6 +91,28 @@ if nodes=$(_pve_get nodes 2>/dev/null); then
         _fail "node '$PVE_NODE' exists" \
               "known nodes: $(jq -r '.data | map(.node) | join(", ")' <<<"$nodes")"
     fi
+fi
+
+# What is actually on this node, rather than what the defaults assume. Printed
+# in full because picking PVE_STORAGE and PVE_ISO_STORAGE correctly is easier
+# from a list than from guesswork -- and because a BTRFS storage needs one
+# extra thing (see the cache note below).
+section "storage inventory on $PVE_NODE"
+if inv=$(_pve_get "nodes/$PVE_NODE/storage" 2>/dev/null); then
+    while IFS=$'\t' read -r st ty content active; do
+        [[ -n $st ]] || continue
+        note=""
+        [[ $ty == btrfs ]] && note="  <- BTRFS: needs cache!=none (PVE_DISK_CACHE=$PVE_DISK_CACHE handles it)"
+        [[ $active == 1 ]] || note="  <- INACTIVE"
+        printf '       %-16s %-10s %s%s\n' "$st" "$ty" "$content" "$note"
+    done < <(jq -r '.data[] | [.storage, .type, .content, (.active|tostring)] | @tsv' <<<"$inv")
+    _pass "listed $(jq -r '.data|length' <<<"$inv") storage(s)"
+
+    # Suggest, rather than silently accept a default that does not fit.
+    cand_img=$(jq -r '.data[] | select(.active == 1 and (.content | contains("images"))) | .storage' <<<"$inv" | paste -sd' ' -)
+    cand_iso=$(jq -r '.data[] | select(.active == 1 and (.content | contains("iso")))    | .storage' <<<"$inv" | paste -sd' ' -)
+    [[ -n $cand_img ]] && echo "       usable for VM disks (PVE_STORAGE):     $cand_img"
+    [[ -n $cand_iso ]] && echo "       usable for ISOs     (PVE_ISO_STORAGE): $cand_iso"
 fi
 
 section "storage"

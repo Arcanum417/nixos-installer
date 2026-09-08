@@ -77,6 +77,32 @@ chose as its first line. A backend that cannot run reports itself as skipped
 `xorriso` is still needed on the *machine running the suite*, to repack the
 installer ISO with a serial console — `nix-shell -p xorriso`.
 
+### Which storage to use
+
+Don't guess — `proxmox-preflight.sh` prints every storage on the node with its
+type and content types, and then names the ones actually usable for VM disks
+and for ISOs. Pick from that list.
+
+Any storage carrying `images` works for `PVE_STORAGE`, and any carrying `iso`
+works for `PVE_ISO_STORAGE`. They can be the same storage if it does both. A
+default Proxmox install gives you `local-lvm` (LVM-thin: `images rootdir`) and
+`local` (directory: `iso vztmpl backup images ...`), which is why those are the
+defaults here — but a node with BTRFS, ZFS or NFS storage may be arranged
+differently.
+
+**If your VM disks live on BTRFS, one thing matters.** Proxmox's BTRFS
+documentation warns:
+
+> BTRFS will honor the O_DIRECT flag when opening files, meaning VMs should not
+> use cache mode `none`, otherwise there will be checksum errors.
+
+Both `none` and `directsync` use `O_DIRECT`, so both are unusable there. This
+backend therefore sets `cache=writeback` on every disk explicitly rather than
+inheriting a default — safe on every storage type, and ZFS in the guest is
+crash-consistent, which is what the pull-a-disk phases depend on. Override with
+`PVE_DISK_CACHE` if you have a reason, but do not set it to `none` or
+`directsync` on BTRFS.
+
 ## What differs from the UTM backend
 
 Only this file and `lib-proxmox.sh`. The phases, assertions, probes and expect

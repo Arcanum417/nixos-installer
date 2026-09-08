@@ -19,6 +19,8 @@
 #                     Authorization: PVEAPIToken=USER@REALM!TOKENID=UUID
 #                   passed to curl as -H @file so the secret never reaches argv
 #   PVE_STORAGE     storage for VM disks       (default local-lvm)
+#   PVE_DISK_CACHE  drive cache mode           (default writeback; see below --
+#                   do NOT use none or directsync on BTRFS storage)
 #   PVE_ISO_STORAGE storage holding the ISOs   (default local)
 #   PVE_BRIDGE      network bridge             (default vmbr0)
 #   PVE_SSH         ssh destination for the serial console (default root@$PVE_HOST)
@@ -33,6 +35,15 @@
 #   - Scope the API token to that band -- PVEVMAdmin on /vms/9000..9099 rather
 #     than on /vms -- so a bug in this harness cannot reach a production VM
 #     even if the checks below are wrong.
+
+# Disk cache mode. writeback rather than the default, because it must not be a
+# mode that uses O_DIRECT: Proxmox's own BTRFS documentation warns that "BTRFS
+# will honor the O_DIRECT flag when opening files, meaning VMs should not use
+# cache mode none, otherwise there will be checksum errors". `none` and
+# `directsync` both use O_DIRECT, so both are out on a BTRFS-backed storage.
+# writeback is safe on every storage type this suite might land on, and ZFS in
+# the guest is crash-consistent, which is what the pull-a-disk phases rely on.
+PVE_DISK_CACHE=${PVE_DISK_CACHE:-writeback}
 
 PVE_STORAGE=${PVE_STORAGE:-local-lvm}
 PVE_ISO_STORAGE=${PVE_ISO_STORAGE:-local}
@@ -242,7 +253,7 @@ vm_define () {
 
     for (( i = 0; i < ndisks; i++ )); do
         args+=(--data-urlencode \
-          "scsi$i=$PVE_STORAGE:$disk_gb,serial=$(_pve_serial "$i"),wwn=$(_pve_wwn "$i"),discard=on,iothread=1")
+          "scsi$i=$PVE_STORAGE:$disk_gb,serial=$(_pve_serial "$i"),wwn=$(_pve_wwn "$i"),discard=on,iothread=1,cache=$PVE_DISK_CACHE")
     done
 
     # Two CD-ROMs on ide0 and ide2, the even indices. The odd ones map to
@@ -291,7 +302,8 @@ vm_readd_drive () { # vm_readd_drive NAME ID
               | .[0].value // empty')
     [[ -n $volid ]] || { echo "no unused volume to reattach as $slot" >&2; return 1; }
     upid=$(_pve_post "nodes/$PVE_NODE/qemu/$vmid/config" \
-        --data-urlencode "$slot=$volid,discard=on,iothread=1" | jq -r '.data // empty')
+        --data-urlencode "$slot=$volid,discard=on,iothread=1,cache=$PVE_DISK_CACHE" \
+        | jq -r '.data // empty')
     _pve_wait_task "$upid" 120
 }
 
@@ -305,7 +317,7 @@ vm_blank_drive () { # vm_blank_drive NAME ID SIZE_GB
     _pve_config "$vmid" | jq -e --arg s "$slot" 'has($s)' >/dev/null && return 0
     upid=$(_pve_post "nodes/$PVE_NODE/qemu/$vmid/config" \
         --data-urlencode \
-        "$slot=$PVE_STORAGE:$size,serial=$(_pve_serial "$n"),wwn=$(_pve_wwn "$n" 1),discard=on,iothread=1" \
+        "$slot=$PVE_STORAGE:$size,serial=$(_pve_serial "$n"),wwn=$(_pve_wwn "$n" 1),discard=on,iothread=1,cache=$PVE_DISK_CACHE" \
         | jq -r '.data // empty')
     _pve_wait_task "$upid" 300
 }
