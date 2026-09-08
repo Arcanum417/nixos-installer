@@ -18,7 +18,7 @@ set port    [lindex $argv 1]
 # it is killed. log_file also captures send_user, so "FAILED:" reaches the log.
 log_file -a $logfile
 
-set boot_timeout    1800
+set boot_timeout    30
 set cmd_timeout     300
 set replace_timeout 7200
 
@@ -42,6 +42,7 @@ proc bail {code msg} {
 # One disconnect per boot is expected: UTM drops the serial TCP client when the
 # guest reinitialises the UART, which GRUB does on its way to the kernel.
 set drops 0
+set nudges 0
 set connected 0
 proc serial_connect {} {
     global spawn_id port connected
@@ -70,7 +71,16 @@ expect {
     -re {root@[-a-z0-9]+:[^\r\n]*\]\$} { }
     "Emergency Mode" { bail 20 "guest dropped into emergency mode" }
     eof     { reconnect_or_bail; send -s "\r"; exp_continue }
-    timeout { bail 22 "no shell after ${boot_timeout}s" }
+    timeout {
+        # Nudge the getty and keep waiting. One newline before the boot has
+        # finished is not enough: the autologin session starts late (after
+        # docker, timers, etc) and prints its prompt only when something asks
+        # for it, so a single early \r is consumed by the boot spew.
+        incr nudges
+        if {$nudges > 40} { bail 22 "no shell on the serial console (did GRUB boot?)" }
+        send -s "\r"
+        exp_continue
+    }
 }
 send -s "dmesg -n 1\r"
 wait_prompt
