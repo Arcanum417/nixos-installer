@@ -78,7 +78,20 @@ mkdir -p "$LOGDIR"
 
 cleanup () {
     rm -rf "$WORK"
-    [[ ${VM_KEEP-0} == 1 ]] || vm_destroy_all
+    [[ ${VM_KEEP-0} == 1 ]] && return 0
+
+    # Only the modes this process owns. vm_destroy_all removes every test VM,
+    # which is right for a single run and actively harmful under VM_PARALLEL:
+    # whichever mode finishes first would destroy its sibling's VM mid-phase.
+    # That is exactly what happened -- bios finished 90s ahead of uefi and took
+    # uefi's VM with it, which surfaced as the console dropping 41 times with
+    # socat reporting the socket missing.
+    if [[ -n ${MODES[*]-} ]]; then
+        local m
+        for m in "${MODES[@]}"; do vm_destroy "${VM_PREFIX}${m}" || true; done
+    else
+        vm_destroy_all
+    fi
 }
 trap cleanup EXIT
 

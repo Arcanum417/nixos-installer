@@ -143,20 +143,33 @@ proc wait_shell_ready {} {
 proc enter_bash {} {
     global spawn_id
     for {set i 0} {$i < 20} {incr i} {
-        if {[catch {send -s "exec bash --noprofile --norc"}]} { reconnect_or_bail; continue }
+        # Start bash with the prompt already set, in one command.
+        #
+        # This used to be two steps: `exec bash`, wait for RDY-4b91>, then set
+        # PS1. But after exec the prompt is bash's own default, so waiting for
+        # RDY-4b91> could never match and every attempt burned the full 30s
+        # timeout before the PS1 line was even sent -- once per phase, in three
+        # phases, in both modes. Passing PS1 through the environment means the
+        # first prompt bash draws is already the one being waited for.
+        if {[catch {send -s "exec env PS1='RDY-4b91> ' bash --noprofile --norc"}]} {
+            reconnect_or_bail; continue
+        }
         sleep 1
         if {[catch {send "\r"}]} { reconnect_or_bail; continue }
         set timeout 30
         expect {
-            -re {RDY-4b91>} { return 1 }
+            -re {RDY-4b91>} { }
             eof     { reconnect_or_bail; continue }
-            timeout { }
+            timeout { continue }
         }
         # Bracketed paste wraps typed input in escape sequences and readline
         # echoes them back, which is noise at best and, over a slow serial
         # line, another chance for a command to be redrawn into something
         # else. Turn it off along with any line editing.
-        send -s "PS1='RDY-4b91> '; bind 'set enable-bracketed-paste off' 2>/dev/null; set +o emacs 2>/dev/null"
+        # Now inside bash: quieten readline. Bracketed paste wraps typed input
+        # in escape sequences and echoes them back, which is noise at best and
+        # another chance for a command to be redrawn at worst.
+        send -s "bind 'set enable-bracketed-paste off' 2>/dev/null; set +o emacs 2>/dev/null"
         sleep 1
         if {[catch {send "\r"}]} { reconnect_or_bail; continue }
         expect {
