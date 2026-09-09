@@ -128,10 +128,9 @@ covers.
 
 ## The same suite on Proxmox
 
-The suite has two backends behind one contract, and both are green. On a
-Proxmox VE 8.2.5 node with `/dev/kvm`, **73 checks, 0 failed, 1 skipped** —
-two more checks than the UTM run because the ISOs have to be uploaded to the
-node:
+Both backends are green. On a Proxmox VE 8.2.5 node with `/dev/kvm`, both
+firmware modes run **in parallel** and pass: **75 checks, 0 failed, 1 skipped,
+18m13s wall clock** for the pair.
 
 ```
 assets
@@ -139,8 +138,6 @@ assets
   ok   generated configuration evaluates
   ok   repo ISO built
   ok   installer ISO repacked with a serial console as the default entry
-  ok   installer ISO already on pve
-  ok   repo ISO uploaded to pve
 uefi
   ok   uefi: guest serial port opens
   ok   uefi: install-me.sh completes on a 3-disk mirror
@@ -176,6 +173,11 @@ uefi
   ok   uefi: pool is ONLINE again, not just not-failing
   ok   uefi: no vdev left DEGRADED after the resilver
   ok   uefi: hostid unchanged by the replace
+vm-boot: 38 checks, 0 failed, 0 skipped
+  ok   installer ISO cached (1.7G)
+  ok   generated configuration evaluates
+  ok   repo ISO built
+  ok   installer ISO repacked with a serial console as the default entry
 bios
   ok   bios: guest serial port opens
   ok   bios: install-me.sh completes on a 3-disk mirror
@@ -211,26 +213,67 @@ bios
   ok   bios: pool is ONLINE again, not just not-failing
   ok   bios: no vdev left DEGRADED after the resilver
   ok   bios: hostid unchanged by the replace
-vm-boot: 73 checks, 0 failed, 1 skipped
+vm-boot: 37 checks, 0 failed, 1 skipped
 ```
 
-**About an hour for both modes**, against most of a day on UTM. The guest is
-the same x86_64 machine; the difference is KVM instead of TCG.
+### Where the hour went
 
-| Phase | uefi | bios |
+The first working Proxmox run took about an hour for both modes. It now takes
+about eighteen minutes, and only one of the four changes was a tuning knob:
+
+| Change | Effect |
+|---|---|
+| The resilver wait grepped for a pattern that never matched | replace 15m -> 5m |
+| The backend was still asking for 4 vCPUs | install 9m -> 5m26s |
+| The two firmware modes run in parallel | ~38m -> ~18m |
+| `enter_bash` waited for a prompt that could not appear | boot 3m -> ~2m, per phase |
+
+Three of those were bugs rather than settings. The resilver loop polled for
+`scan:.*resilvered`, but a scrubbed pool reports `scan: scrub repaired 0B` on
+that line, so it ran its full ceiling of 120 x `sleep 5` after a resilver that
+finishes in seconds. `enter_bash` waited for a prompt that only exists *after*
+the command that sets it, so every attempt burned a 30s timeout.
+
+### Sizing was tested and the intuition was wrong
+
+More vCPUs and more memory both make it slower, measured by timing the install
+phase alone on a 32-thread node:
+
+| vCPUs | RAM | install |
 |---|---|---|
-| `install` | ~9 min | ~3.5 min |
-| `boot` | ~2.5 min | ~2.5 min |
-| `degraded` | ~5.5 min | ~6.5 min |
-| `replace` | ~15 min | ~15 min |
+| **8** | **8 GiB** | **5m26s** |
+| 8 | 16 GiB | 5m41s |
+| 16 | 8 GiB | 5m54s |
+| 16 | 16 GiB | 6m08s |
+| 24 | 8 GiB | 6m29s |
 
-Eight bugs turned up on first contact with a real node, all of them in the new
-backend rather than the installer, and `tests/vm/README-proxmox.md` lists them.
-Two are worth repeating here because they invert the usual assumption: the
-probes raced their own output, and `eval spawn [split $cmd]` corrupted
-`spawn_id`. **Both were invisible on UTM because emulation is slow enough to
-hide them.** A slower environment does not just take longer; it conceals a
-whole category of timing bug, and the fast environment is what exposes it.
+The guest confirms it received what it was given (`CPUS=24 MEM=8087816` appears
+in its own transcript), so this is scheduling contention on a host that is also
+running other guests, not nix ignoring the cores. Scaling the VM to a fraction
+of the host would make the suite slower, not faster.
+
+The network is not the constraint either: the node pulls from the binary cache
+at 9.4 MB/s, so ~734 store paths are one to two minutes of an otherwise
+CPU-bound phase.
+
+### What parallelism exposed
+
+Running the modes at once did more than halve the clock -- it applied enough
+timing pressure to surface three bugs that sequential runs had been masking,
+and one that was actively dangerous:
+
+- **A finished mode destroyed its sibling's VM.** `vm_destroy_all` removes
+  every test VM and each mode's cleanup trap called it, so bios finishing 90
+  seconds early took uefi's VM down mid-replace. It presented as the console
+  dropping 41 times, which is why it was twice misdiagnosed as a timing race;
+  the Proxmox task log settled it (`qmdestroy 9001` at 02:38:50, uefi still
+  using that socket at 02:40:11). **Read the hypervisor's own task history
+  before theorising about the guest.**
+- **A fixed 300s shutdown budget.** Under load the degraded phase ran 337s, so
+  `vm_wait_stopped` gave up and the next phase started a VM that was still
+  stopping.
+- **`vm_start` believed a "running" VM that was shutting down**, and treated
+  the start task finishing as the guest being up.
 
 ## The `_1` suffix: retracted, and what it really was
 

@@ -10,24 +10,52 @@ takes hours. An x86_64 Proxmox node runs the identical guest under KVM, so the
 same work happens at near-native speed. Proxmox also gives more realistic
 hardware: real OVMF and SeaBIOS, virtio-scsi, and a node that is not a laptop.
 
-**Status: verified.** A full run — both firmware modes, all four phases —
-passes against a live PVE 8.2.5 node: **73 checks, 0 failed, 1 skipped** (the
-skip is structural: BIOS has no ESP). `RESULTS.md` carries the verbatim output
-and the bugs first contact turned up.
+**Status: verified.** Both firmware modes, all four phases, against a live
+PVE 8.2.5 node: **75 checks, 0 failed, 1 skipped** (the skip is structural —
+BIOS has no ESP). `RESULTS.md` carries the verbatim output.
 
-**It takes about an hour**, both modes end to end, against most of a day on
-UTM. Measured per phase on a node with `/dev/kvm`:
+**About 18 minutes for both modes**, against most of a day on UTM. Run them at
+once with `VM_PARALLEL=1`:
+
+```sh
+VM_PARALLEL=1 bash tests/vm-boot.sh        # ~18m for both modes
+bash tests/vm-boot.sh uefi                 # ~18m for one
+```
 
 | Phase | uefi | bios |
 |---|---|---|
-| `install` | ~9 min | ~3.5 min |
-| `boot` | ~2.5 min | ~2.5 min |
-| `degraded` | ~5.5 min | ~6.5 min |
-| `replace` | ~15 min | ~15 min |
+| `install` | 5m59s | 3m39s |
+| `boot` | 1m56s | 1m52s |
+| `degraded` | 5m07s | 5m02s |
+| `replace` | 4m52s | 5m03s |
+| **total** | **17m54s** | **15m36s** |
 
-The install is quicker in BIOS mode because the two firmware modes build
-different GRUB derivations and the shared parts of the closure are already in
-the node's store by then.
+Run in parallel those overlap, so the wall clock is the slower of the two
+rather than the sum. The install is quicker in BIOS mode because the firmware
+modes build different GRUB derivations and the shared parts of the closure are
+already in the node's store by then.
+
+### Sizing: bigger is not better, and that was measured
+
+The VM gets 8 vCPUs and 8 GiB. Raising either makes it **slower**, measured on
+a 32-thread node by timing the install phase alone:
+
+| vCPUs | RAM | install |
+|---|---|---|
+| **8** | **8 GiB** | **5m26s** |
+| 8 | 16 GiB | 5m41s |
+| 16 | 8 GiB | 5m54s |
+| 16 | 16 GiB | 6m08s |
+| 24 | 8 GiB | 6m29s |
+
+The guest really did receive what it was given — the install records
+`CPUS=24 MEM=8087816` in its own transcript — so this is vCPU scheduling
+contention on a host that is also running other guests, not nix declining to
+use the cores. Do not "improve" this by scaling to a fraction of the host.
+
+Nor is the network the constraint: the node pulls from the binary cache at
+9.4 MB/s, so the install's ~734 store paths are one to two minutes of a
+CPU-bound phase. A local cache would be a second-order win at best.
 
 ## Setting it up
 

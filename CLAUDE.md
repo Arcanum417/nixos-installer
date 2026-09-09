@@ -162,13 +162,18 @@ It has two interchangeable backends behind a thirteen-function contract
 (documented at the top of `tests/vm/lib-utm.sh`): local UTM on macOS, and a
 Proxmox VE node (`tests/vm/lib-proxmox.sh`, `tests/vm/README-proxmox.md`). The
 Proxmox one exists because an x86_64 node runs the guest under KVM rather than
-TCG. It is written and shellcheck-clean but has **not yet been run against a
-real node** -- say so rather than implying it is proven.
+TCG, and it is verified against a live PVE 8.2.5 node.
 
-The suite is green on UTM: 71 checks, 0 failed, 1 skipped across both firmware
-modes.
-The skip is structural (BIOS has no ESP). `tests/vm/RESULTS.md` carries the
-verbatim output and the three defects the suite found on the way there.
+Both are green. UTM: 71 checks, 0 failed, 1 skipped, several hours. Proxmox:
+75 checks, 0 failed, 1 skipped, **18 minutes** with `VM_PARALLEL=1` running both
+firmware modes at once. The skip is structural (BIOS has no ESP).
+
+Two things about the Proxmox backend that look like tuning opportunities and
+are not. **Do not give the VM more vCPUs or memory** -- 8/8 is measured optimal
+and 24 vCPUs is a minute slower, because the contention is on the host
+scheduler; the numbers are in `tests/vm/RESULTS.md`. And **do not make each
+mode's cleanup destroy every test VM**: under `VM_PARALLEL` the first mode to
+finish would take its sibling's VM down mid-phase.
 
 What remains out of reach: real hardware. The guest is emulated, so firmware
 quirks, NVMe/SATA controller behaviour, and anything timing-dependent on a

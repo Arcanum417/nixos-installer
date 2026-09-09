@@ -295,8 +295,14 @@ Linux). One VM per firmware mode is installed, then progressively broken:
 | `replace` | `replace-boot-disk.sh` partitions a blank replacement, randomises its GUIDs, resilvers, reinstalls the bootloader, and the pool returns to fully `ONLINE` with the hostId undisturbed |
 
 ```sh
-bash tests/vm-boot.sh          # both firmware modes; takes hours
+bash tests/vm-boot.sh                        # UTM on macOS; takes hours
+VM_PARALLEL=1 bash tests/vm-boot.sh          # against a Proxmox node; ~18 min
 ```
+
+Two backends sit behind one contract: local UTM on macOS, and a Proxmox VE node
+where the guest runs under KVM instead of TCG. Both pass. Proxmox is roughly an
+order of magnitude quicker and can run the two firmware modes at once — see
+**[`tests/vm/README-proxmox.md`](tests/vm/README-proxmox.md)**.
 
 The guest is x86_64 because `BOOTX64.EFI` and the `EF02` BIOS boot partition
 are x86-only — an aarch64 guest is far faster but cannot test the BIOS path at
