@@ -306,11 +306,17 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
     # that stops resolving after a reboot is a machine that will not come back.
     # udev generates these names from what the kernel enumerated, and
     # enumeration order is not guaranteed stable between boots.
+    # Anchored to NDISKS, not just to each other. Comparing the two probes alone
+    # passes when both fail the same way, which is exactly what happened when a
+    # Tcl bracket substitution silently rewrote the jq filter: both returned the
+    # same error string and the assertion was vacuous.
+    eq "$firmware: the layout still records $NDISKS disks" \
+       "$(probe "$log" byid_total)" "$NDISKS"
     eq "$firmware: every by-id path in the layout resolves" \
-       "$(probe "$log" byid_resolved)" "$(probe "$log" byid_total)"
+       "$(probe "$log" byid_resolved)" "$NDISKS"
     for r in $(seq 1 "$BOOT_REBOOTS"); do
         eq "$firmware: they still resolve after reboot $r" \
-           "$(probe "$log" "reboot${r}_resolved")" "$(probe "$log" byid_total)"
+           "$(probe "$log" "reboot${r}_resolved")" "$NDISKS"
         contains "$firmware: the pool still imports after reboot $r" \
                  "$(probe "$log" "reboot${r}_pool")" "zroot ONLINE"
     done
