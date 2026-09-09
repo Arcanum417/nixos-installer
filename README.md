@@ -296,7 +296,7 @@ Linux). One VM per firmware mode is installed, then progressively broken:
 
 ```sh
 bash tests/vm-boot.sh                        # UTM on macOS; takes hours
-VM_PARALLEL=1 bash tests/vm-boot.sh          # against a Proxmox node; ~18 min
+VM_PARALLEL=1 bash tests/vm-boot.sh          # against a Proxmox node; ~24 min
 ```
 
 Two backends sit behind one contract: local UTM on macOS, and a Proxmox VE node

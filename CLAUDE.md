@@ -164,9 +164,13 @@ Proxmox VE node (`tests/vm/lib-proxmox.sh`, `tests/vm/README-proxmox.md`). The
 Proxmox one exists because an x86_64 node runs the guest under KVM rather than
 TCG, and it is verified against a live PVE 8.2.5 node.
 
-Both are green. UTM: 71 checks, 0 failed, 1 skipped, several hours. Proxmox:
-75 checks, 0 failed, 1 skipped, **16 minutes** with `VM_PARALLEL=1` running both
-firmware modes at once. The skip is structural (BIOS has no ESP).
+Proxmox is green: **131 checks, 0 failed, 1 skipped, 24 minutes** with
+`VM_PARALLEL=1` running both firmware modes at once, across seven phases —
+install, boot, degraded, replace, widen (`--add`), narrow (`--drop`) and
+datapool (`add-data-pool.sh`, including a reboot to prove the encrypted pool
+imports itself). The skip is structural (BIOS has no ESP). The UTM backend's
+71-check result predates the shared-driver changes made during the Proxmox
+work and is unverified against current HEAD.
 
 Two things about the Proxmox backend that look like tuning opportunities and
 are not. **Do not give the VM more vCPUs or memory** -- 8/8 is measured optimal
@@ -174,6 +178,16 @@ and 24 vCPUs is a minute slower, because the contention is on the host
 scheduler; the numbers are in `tests/vm/RESULTS.md`. And **do not make each
 mode's cleanup destroy every test VM**: under `VM_PARALLEL` the first mode to
 finish would take its sibling's VM down mid-phase.
+
+Two traps when working on the drivers themselves. **Do not edit `vm-boot.sh`
+while a run is in flight** -- bash reads a script lazily by byte offset, so
+rewriting it in place makes the running shell re-execute the phase loop, and
+the result looks like a passing run with every assertion duplicated. And
+**brace probe commands that contain `[`**: Tcl treats `[...]` in a
+double-quoted string as a command substitution, which silently rewrote
+`.bootDisks[].id` into `.bootDisks.id` and left five assertions comparing one
+jq error to an identical one. Anchor a count to an expected value, never only
+to another probe that can fail the same way.
 
 What remains out of reach: real hardware. The guest is emulated, so firmware
 quirks, NVMe/SATA controller behaviour, and anything timing-dependent on a

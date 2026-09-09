@@ -10,11 +10,11 @@ takes hours. An x86_64 Proxmox node runs the identical guest under KVM, so the
 same work happens at near-native speed. Proxmox also gives more realistic
 hardware: real OVMF and SeaBIOS, virtio-scsi, and a node that is not a laptop.
 
-**Status: verified.** Both firmware modes, all four phases, against a live
-PVE 8.2.5 node: **75 checks, 0 failed, 1 skipped** (the skip is structural —
+**Status: verified.** Both firmware modes, all seven phases, against a live
+PVE 8.2.5 node: **131 checks, 0 failed, 1 skipped** (the skip is structural —
 BIOS has no ESP). `RESULTS.md` carries the verbatim output.
 
-**About 16 minutes for both modes**, against most of a day on UTM. Run them at
+**About 24 minutes for both modes**, against most of a day on UTM. Run them at
 once with `VM_PARALLEL=1`:
 
 ```sh
@@ -24,16 +24,22 @@ bash tests/vm-boot.sh uefi                 # ~18m for one
 
 | Phase | uefi | bios |
 |---|---|---|
-| `install` | 5m27s | 3m10s |
-| `boot` | 0m55s | 0m55s |
-| `degraded` | 4m34s | 3m57s |
-| `replace` | 4m15s | 4m28s |
-| **total** | **15m11s** | **12m30s** |
+| `install` | 5m31s | 3m02s |
+| `boot` | 2m17s | 1m41s |
+| `degraded` | 3m58s | 4m31s |
+| `replace` | 4m24s | 4m34s |
+| `widen` | 2m02s | 1m42s |
+| `narrow` | 1m47s | 1m28s |
+| `datapool` | 2m39s | 2m12s |
+| **total** | **22m38s** | **19m10s** |
 
 Run in parallel those overlap, so the wall clock is the slower of the two
-rather than the sum — 16m22s measured. The install is quicker in BIOS mode
+rather than the sum — 24m19s measured. The install is quicker in BIOS mode
 because the firmware modes build different GRUB derivations and the shared part
 of the closure is already in the node's store by then.
+
+The `boot` phase reboots the guest twice on purpose, to check the recorded
+by-id paths keep resolving; `BOOT_REBOOTS=0` skips that if you are in a hurry.
 
 ### Typing speed is a real cost
 

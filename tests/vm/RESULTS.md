@@ -114,35 +114,37 @@ than the green: three real defects, listed below.
 None of these are failures; they are the honest edges of what this suite
 covers.
 
-- **Widening and narrowing a mirror.** The VM suite drives
-  `replace-boot-disk.sh` on its default replace path only; `--add` and `--drop`
-  are covered by neither the VM suite nor the unit tests.
-- **The data pool, and `add-data-pool.sh` entirely.** `install-me.sh` is driven
-  with the data pool skipped, so encrypted-pool creation, import and the
-  `/root/.zfs-encrypt.key` handling are evaluation-only, and
-  `add-data-pool.sh` is never executed by any suite.
-- **Resilvering onto a genuinely smaller disk.** `disk-integration.sh` proves
-  the 1 GiB of end slack exists and that a smaller disk is rejected where it
-  should be, but the VM replace hands over a disk of identical size, so the
-  slack has never actually been used for what it is for.
-- **by-id stability across reboots.** The by-id defect below was found here, so
-  the mechanism is understood, but a test that installs, reboots several times
-  and asserts the recorded paths still resolve has not been written.
-- **The UTM backend since the Proxmox work.** The expect drivers are shared,
-  and they changed a lot while the Proxmox backend was being built: per-probe
-  end markers, a rewritten `enter_bash`, `spawn` without `eval`, and a tunable
-  keystroke pace. UTM keeps its slower default and nothing in those changes is
-  backend-specific, but its last green run predates all of them, so treat the
-  71-check result above as unverified against current HEAD until someone spends
-  the hours to re-run it.
-- **Real hardware.** The guest is emulated. Firmware quirks, real controller
+- **The UTM backend since the Proxmox work.** The expect drivers are shared and
+  changed a lot while the Proxmox backend was built: per-probe end markers, a
+  rewritten `enter_bash`, `spawn` without `eval`, a tunable keystroke pace. UTM
+  keeps its slower defaults and nothing in those changes is backend-specific,
+  but its last green run predates all of them, so treat the 71-check result
+  above as unverified against current HEAD.
+- **Real hardware.** The guest is virtual. Firmware quirks, real controller
   behaviour and anything timing-dependent are out of reach by construction.
+- **Adopting an existing data pool.** `add-data-pool.sh` is now driven, but on
+  its "create" path. The "adopt an already-importable pool" branch, and the
+  import-with-a-supplied-key path that goes with it, are still only evaluated.
+
+### Closed since
+
+For the record, because each of these was listed here and is now covered:
+
+- `replace-boot-disk.sh --add` and `--drop`, as the `widen` and `narrow`
+  phases. Both assert the mounted-boot-partition count, which is the thing that
+  actually breaks when the layout bookkeeping is wrong.
+- `add-data-pool.sh`, which was executed by nothing, as the `datapool` phase --
+  including a reboot afterwards, because an encrypted pool that imports only
+  while an operator is present with the key is worth nothing.
+- Resilvering onto a disk smaller than the original, in CI rather than the VM:
+  loop devices prove it in seconds.
+- by-id stability across reboots, as two extra reboots in the `boot` phase.
 
 ## The same suite on Proxmox
 
 Both backends are green. On a Proxmox VE 8.2.5 node with `/dev/kvm`, both
-firmware modes run **in parallel** and pass: **75 checks, 0 failed, 1 skipped,
-16m22s wall clock** for the pair.
+firmware modes run **in parallel** across seven phases and pass: **131 checks,
+0 failed, 1 skipped, 24m19s wall clock** for the pair.
 
 ```
 assets
@@ -169,6 +171,12 @@ uefi
   ok   uefi: zfs-health-check reports healthy
   ok   uefi: no vdev is DEGRADED
   ok   uefi: every mirror member's boot partition is mounted
+  ok   uefi: the layout still records 3 disks
+  ok   uefi: every by-id path in the layout resolves
+  ok   uefi: they still resolve after reboot 1
+  ok   uefi: the pool still imports after reboot 1
+  ok   uefi: they still resolve after reboot 2
+  ok   uefi: the pool still imports after reboot 2
   ok   uefi: root pool imported without a force flag
   ok   uefi: GRUB is at the removable path
   ok   uefi: boots with the first mirror member pulled
@@ -185,12 +193,37 @@ uefi
   ok   uefi: pool is ONLINE again, not just not-failing
   ok   uefi: no vdev left DEGRADED after the resilver
   ok   uefi: hostid unchanged by the replace
-  uefi/install       5m27s
-  uefi/boot          0m55s
-  uefi/degraded      4m34s
-  uefi/replace       4m15s
-  total             15m11s
-vm-boot: 38 checks, 0 failed, 0 skipped
+  ok   uefi: replace-boot-disk.sh --add widens the mirror
+  ok   uefi: the widened pool is healthy
+  ok   uefi: widened pool is ONLINE
+  ok   uefi: layout json records the extra disk
+  ok   uefi: the added disk's boot partition is mounted too
+  ok   uefi: no vdev DEGRADED after widening
+  ok   uefi: replace-boot-disk.sh --drop narrows the mirror
+  ok   uefi: the narrowed pool is healthy
+  ok   uefi: narrowed pool is ONLINE
+  ok   uefi: layout json forgot the dropped disk
+  ok   uefi: the survivors' boot partitions are still mounted
+  ok   uefi: no vdev DEGRADED after narrowing
+  ok   uefi: add-data-pool.sh creates an encrypted data pool
+  ok   uefi: data pool is ONLINE
+  ok   uefi: data pool is encrypted
+  ok   uefi: the default datasets exist
+  ok   uefi: layout json records the pool and its key file
+  ok   uefi: the root pool is untouched by the data pool work
+  ok   uefi: hostid unchanged by add-data-pool.sh
+  ok   uefi: the data pool imports itself on the next boot
+  ok   uefi: its key loads from the key file at boot
+  ok   uefi: its datasets are mounted after the reboot
+  uefi/install       5m31s
+  uefi/boot          2m17s
+  uefi/degraded      3m58s
+  uefi/replace       4m24s
+  uefi/widen         2m02s
+  uefi/narrow        1m47s
+  uefi/datapool      2m39s
+  total             22m38s
+vm-boot: 66 checks, 0 failed, 0 skipped
   ok   installer ISO cached (1.7G)
   ok   generated configuration evaluates
   ok   repo ISO built
@@ -214,6 +247,12 @@ bios
   ok   bios: zfs-health-check reports healthy
   ok   bios: no vdev is DEGRADED
   ok   bios: every mirror member's boot partition is mounted
+  ok   bios: the layout still records 3 disks
+  ok   bios: every by-id path in the layout resolves
+  ok   bios: they still resolve after reboot 1
+  ok   bios: the pool still imports after reboot 1
+  ok   bios: they still resolve after reboot 2
+  ok   bios: the pool still imports after reboot 2
   ok   bios: root pool imported without a force flag
   skip bios: removable EFI path (BIOS mode has no ESP)
   ok   bios: boots with the first mirror member pulled
@@ -230,12 +269,37 @@ bios
   ok   bios: pool is ONLINE again, not just not-failing
   ok   bios: no vdev left DEGRADED after the resilver
   ok   bios: hostid unchanged by the replace
-  bios/install       3m10s
-  bios/boot          0m55s
-  bios/degraded      3m57s
-  bios/replace       4m28s
-  total             12m30s
-vm-boot: 37 checks, 0 failed, 1 skipped
+  ok   bios: replace-boot-disk.sh --add widens the mirror
+  ok   bios: the widened pool is healthy
+  ok   bios: widened pool is ONLINE
+  ok   bios: layout json records the extra disk
+  ok   bios: the added disk's boot partition is mounted too
+  ok   bios: no vdev DEGRADED after widening
+  ok   bios: replace-boot-disk.sh --drop narrows the mirror
+  ok   bios: the narrowed pool is healthy
+  ok   bios: narrowed pool is ONLINE
+  ok   bios: layout json forgot the dropped disk
+  ok   bios: the survivors' boot partitions are still mounted
+  ok   bios: no vdev DEGRADED after narrowing
+  ok   bios: add-data-pool.sh creates an encrypted data pool
+  ok   bios: data pool is ONLINE
+  ok   bios: data pool is encrypted
+  ok   bios: the default datasets exist
+  ok   bios: layout json records the pool and its key file
+  ok   bios: the root pool is untouched by the data pool work
+  ok   bios: hostid unchanged by add-data-pool.sh
+  ok   bios: the data pool imports itself on the next boot
+  ok   bios: its key loads from the key file at boot
+  ok   bios: its datasets are mounted after the reboot
+  bios/install       3m02s
+  bios/boot          1m41s
+  bios/degraded      4m31s
+  bios/replace       4m34s
+  bios/widen         1m42s
+  bios/narrow        1m28s
+  bios/datapool      2m12s
+  total             19m10s
+vm-boot: 65 checks, 0 failed, 1 skipped
 ```
 
 ### Where the hour went
