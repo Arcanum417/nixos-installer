@@ -13,6 +13,63 @@
 set logfile [lindex $argv 0]
 set port    [lindex $argv 1]
 
+# Which mirror operation to drive. replace-boot-disk.sh does three things and
+# they differ only in the flag and the answers they need, so one driver covers
+# all three rather than three near-identical copies of the boot-and-probe
+# machinery below.
+#
+#   replace  swap a failed member for a new disk   (default)
+#   add      widen the mirror with another disk
+#   drop     forget a dead member without replacing it
+set op [lindex $argv 2]
+if {$op eq ""} { set op replace }
+
+# The mirror operations all drive replace-boot-disk.sh; the datapool operation
+# overrides this.
+set script "/etc/nixos/replace-boot-disk.sh"
+set opflag ""
+
+switch -- $op {
+    replace {
+        # \n       take the default slot (the first non-ONLINE member)
+        # 1        pick the first offered disk
+        # d        select_disks done
+        # REPLACE  confirm_hard
+        # y        confirm "Delete its contents?"
+        set opflag  ""
+        set answers {\n1\nd\nREPLACE\ny\n}
+    }
+    add {
+        # --add takes no slot: it appends. Otherwise the same shape.
+        set opflag  " --add"
+        set answers {1\nd\nREPLACE\ny\n}
+    }
+    drop {
+        # --drop picks a member and confirms; there is no disk to select.
+        set opflag  " --drop"
+        set answers {1\nDROP\ny\n}
+    }
+    datapool {
+        # A different script, but the same shape: run it with canned answers
+        # and probe what it left behind.
+        #
+        #   \n        ask CHOICE, default 1 (create a new encrypted pool)
+        #   y         confirm "Generate a NEW random 32-byte key" -- read -n 1,
+        #             so no newline after it or the next read eats one
+        #   y         confirm "Backed up?"       -- also read -n 1
+        #   1         pick the first offered disk
+        #   d         select_disks done
+        #   \n        ask DS_LIST, default "docker docker_apps"
+        #   DESTROY   confirm_hard
+        set script  "/etc/nixos/add-data-pool.sh"
+        set answers {\nyy1\nd\n\nDESTROY\n}
+    }
+    default { 
+        send_user "unknown operation '$op' (replace|add|drop)\n"
+        exit 2
+    }
+}
+
 # Written here rather than by redirecting stdout: expect buffers a redirected
 # stdout, which hides progress during a long run and truncates the evidence if
 # it is killed. log_file also captures send_user, so "FAILED:" reaches the log.
@@ -259,7 +316,7 @@ wait_prompt
 #   REPLACE  confirm_hard
 #   y        confirm "Delete its contents?" (leftovers written to the root
 #            pool while the disk was missing; harmless if not asked)
-send_log "\n\[step\] running replace-boot-disk.sh\n"
+send_log "\n\[step\] running replace-boot-disk.sh $op\n"
 # Type the command, let fish finish redrawing, then submit with a separate
 # Return. The installed system runs fish with starship, which redraws the
 # prompt after every keystroke; a \r tacked onto the end of a slow-typed
@@ -274,7 +331,7 @@ send_log "\n\[step\] running replace-boot-disk.sh\n"
 # replace-boot-disk.sh ever ran, which is exactly what the console showed: a
 # command on the prompt line and no script output. bash -c makes the pipeline,
 # the quoting and $? all mean what the script expects.
-send -s "bash -c \"printf '\\n1\\nd\\nREPLACE\\ny\\n' | /etc/nixos/replace-boot-disk.sh; echo R-EXIT=\\\$?\""
+send -s "bash -c \"printf '$answers' | $script$opflag; echo R-EXIT=\\\$?\""
 sleep 2
 send "\r"
 
@@ -384,6 +441,43 @@ probe degraded    "zpool status zroot | grep -c DEGRADED"
 # would leave a machine that cannot import its own root pool on the next boot.
 # replace-boot-disk.sh never touches it; nothing proved that until now.
 probe hostid      "hostid"
+
+# How many mirror members currently have their boot partition mounted. Widening
+# and narrowing the mirror have to add and remove one of these, and a member
+# whose /boot is not mounted stops receiving new generations -- the exact
+# silent failure zfs-health.nix exists to catch.
+probe bootmounts  "findmnt -rno TARGET | grep -c '^/boot'"
+
+# Data pool facts. Empty for the mirror operations, which is fine -- the suite
+# only asserts on them for the datapool phase.
+probe datapool    "zpool list -H -o name,health zdata 2>&1 | tr '\\t' ' ' | tr -s ' '"
+probe dataenc     "zfs get -H -o value encryption zdata 2>&1"
+probe datasets    "zfs list -H -o name -r -d 1 zdata 2>&1 | tr '\\n' ' '"
+probe datalayout  "jq -rc '.dataPool.name, .dataPool.keyFile' /etc/nixos/disk-layout.json 2>&1 | tr '\\n' ' '"
+probe datamounts  "findmnt -rno TARGET | grep -c '^/mnt/'"
+
+# The point of the data pool is that it comes back by itself. Encryption keys
+# live in a file the pool references, so an import that only works while the
+# operator is standing there with the key loaded is worth nothing. Reboot and
+# ask again.
+if {$op eq "datapool"} {
+    send_log "\n\[step\] rebooting to prove the data pool imports on its own\n"
+    catch {send -s "reboot\r"}
+    sleep 20
+    serial_connect
+    set timeout $boot_timeout
+    expect {
+        -re {\]133;A|root@[-a-z0-9]+:[^\r\n]*\]#|RDY-4b91>} { }
+        eof     { reconnect_or_bail; send -s "\r"; exp_continue }
+        timeout { send -s "\r"; exp_continue }
+    }
+    if {![wait_shell_ready]} { bail 27 "no shell after the data-pool reboot" }
+    if {![enter_bash]}       { bail 28 "could not hand the post-reboot session to bash" }
+
+    probe bootdatapool  "zpool list -H -o name,health zdata 2>&1 | tr '\\t' ' ' | tr -s ' '"
+    probe bootdatakey   "zfs get -H -o value keystatus zdata 2>&1"
+    probe bootdatamounts "findmnt -rno TARGET | grep -c '^/mnt/'"
+}
 
 send_log "\n\[step\] probes done\n"
 

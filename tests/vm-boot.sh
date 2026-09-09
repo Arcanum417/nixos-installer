@@ -71,6 +71,10 @@ utm_available || {
 echo "backend: $VM_BACKEND"
 
 DISK_GB=${DISK_GB:-8}
+# Extra reboots in the boot phase, to prove the recorded by-id paths keep
+# resolving. Two is enough to catch an enumeration order that is not stable;
+# each costs about a minute.
+BOOT_REBOOTS=${BOOT_REBOOTS:-2}
 NDISKS=${NDISKS:-3}
 WORK=$(mktemp -d)
 LOGDIR=${LOGDIR:-$ROOT/tests/vm/logs}
@@ -254,7 +258,7 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
     vm_start "$name"
     vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: boot serial" "no serial"; PHASE_OK=0; return; }
 
-    if run_expect postboot.expect "$log" "$port"; then
+    if run_expect postboot.expect "$log" "$port" "$BOOT_REBOOTS"; then
         _pass "$firmware: installed system boots off the mirror"
     else
         _fail "$firmware: installed system boots off the mirror" \
@@ -298,6 +302,19 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
     # boot.zfs.forceImportRoot = false is the reason the hostId handling has to
     # be right; if the kernel command line carried a force flag, a broken
     # hostId would be masked and this suite would prove nothing about it.
+    # by-id stability. The layout stores /dev/disk/by-id/... verbatim, so a path
+    # that stops resolving after a reboot is a machine that will not come back.
+    # udev generates these names from what the kernel enumerated, and
+    # enumeration order is not guaranteed stable between boots.
+    eq "$firmware: every by-id path in the layout resolves" \
+       "$(probe "$log" byid_resolved)" "$(probe "$log" byid_total)"
+    for r in $(seq 1 "$BOOT_REBOOTS"); do
+        eq "$firmware: they still resolve after reboot $r" \
+           "$(probe "$log" "reboot${r}_resolved")" "$(probe "$log" byid_total)"
+        contains "$firmware: the pool still imports after reboot $r" \
+                 "$(probe "$log" "reboot${r}_pool")" "zroot ONLINE"
+    done
+
     lacks "$firmware: root pool imported without a force flag" \
           "$(probe "$log" forceimport)" "zfs_force"
 
@@ -389,10 +406,129 @@ phase_replace () { # phase_replace NAME FIRMWARE PORT
     vm_wait_stopped "$name" 600 || vm_kill "$name"
 }
 
+# Widen the mirror, then narrow it again.
+#
+# replace-boot-disk.sh does three things -- replace, --add, --drop -- and only
+# replace was ever driven. These are the two that change the *width* of the
+# mirror, which is where the layout bookkeeping is easy to get wrong: /boot
+# mount points are stored per disk rather than derived from array position
+# precisely so that dropping a member does not renumber and remount the
+# survivors.
+phase_widen () { # phase_widen NAME FIRMWARE PORT
+    local name=$1 firmware=$2 port=$3
+    local log="$LOGDIR/$firmware-widen.log"
+    local want=$((NDISKS + 1))
+
+    # A fifth disk, never seen by the pool before.
+    vm_blank_drive "$name" disk4 "$DISK_GB"
+    vm_readd_drive "$name" disk4
+    utm_reload
+    vm_start "$name"
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: widen serial" "no serial"; PHASE_OK=0; return; }
+
+    if run_expect replace.expect "$log" "$port" add; then
+        _pass "$firmware: replace-boot-disk.sh --add widens the mirror"
+    else
+        _fail "$firmware: replace-boot-disk.sh --add widens the mirror" \
+              "$(grep -m1 'FAILED:' "$log" || echo "see $log")"
+        PHASE_OK=0; return
+    fi
+
+    contains "$firmware: the widened pool is healthy" "$(probe "$log" poolhealthy)" "healthy"
+    contains "$firmware: widened pool is ONLINE" "$(probe "$log" poolstate)" "zroot ONLINE"
+    contains "$firmware: layout json records the extra disk" \
+             "$(probe "$log" layout)" "\"n\":$want"
+    eq "$firmware: the added disk's boot partition is mounted too" \
+       "$(probe "$log" bootmounts)" "$want"
+    eq "$firmware: no vdev DEGRADED after widening" "$(probe "$log" degraded)" "0"
+
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
+}
+
+phase_narrow () { # phase_narrow NAME FIRMWARE PORT
+    local name=$1 firmware=$2 port=$3
+    local log="$LOGDIR/$firmware-narrow.log"
+
+    vm_start "$name"
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: narrow serial" "no serial"; PHASE_OK=0; return; }
+
+    if run_expect replace.expect "$log" "$port" drop; then
+        _pass "$firmware: replace-boot-disk.sh --drop narrows the mirror"
+    else
+        _fail "$firmware: replace-boot-disk.sh --drop narrows the mirror" \
+              "$(grep -m1 'FAILED:' "$log" || echo "see $log")"
+        PHASE_OK=0; return
+    fi
+
+    contains "$firmware: the narrowed pool is healthy" "$(probe "$log" poolhealthy)" "healthy"
+    contains "$firmware: narrowed pool is ONLINE" "$(probe "$log" poolstate)" "zroot ONLINE"
+    contains "$firmware: layout json forgot the dropped disk" \
+             "$(probe "$log" layout)" "\"n\":$NDISKS"
+    # The survivors must keep the mount points they had. A drop that renumbered
+    # them would still mount N directories, so count and health are not enough
+    # on their own -- but combined with the pool staying ONLINE they catch the
+    # failure that matters: a member silently no longer receiving generations.
+    eq "$firmware: the survivors' boot partitions are still mounted" \
+       "$(probe "$log" bootmounts)" "$NDISKS"
+    eq "$firmware: no vdev DEGRADED after narrowing" "$(probe "$log" degraded)" "0"
+
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
+}
+
+# The data pool: created after the fact by add-data-pool.sh, which until now was
+# executed by nothing at all. install-me.sh is driven with the data pool
+# skipped, so this is the only coverage of encrypted-pool creation, of the
+# keyFile wiring in disk-layout.nix, and of the pool coming back on its own
+# after a reboot -- which is the part that matters, because a pool that only
+# imports while an operator is standing there with the key is worth nothing.
+phase_datapool () { # phase_datapool NAME FIRMWARE PORT
+    local name=$1 firmware=$2 port=$3
+    local log="$LOGDIR/$firmware-datapool.log"
+
+    # Its own disk, so the root mirror is untouched and select_disks has
+    # something to offer that is not already in the layout.
+    vm_blank_drive "$name" disk5 "$DISK_GB"
+    vm_readd_drive "$name" disk5
+    utm_reload
+    vm_start "$name"
+    vm_serial_ready "$name" "$port" 120 || { _fail "$firmware: datapool serial" "no serial"; PHASE_OK=0; return; }
+
+    if run_expect replace.expect "$log" "$port" datapool; then
+        _pass "$firmware: add-data-pool.sh creates an encrypted data pool"
+    else
+        _fail "$firmware: add-data-pool.sh creates an encrypted data pool" \
+              "$(grep -m1 'FAILED:' "$log" || echo "see $log")"
+        PHASE_OK=0; return
+    fi
+
+    contains "$firmware: data pool is ONLINE" "$(probe "$log" datapool)" "zdata ONLINE"
+    contains "$firmware: data pool is encrypted" "$(probe "$log" dataenc)" "aes"
+    contains "$firmware: the default datasets exist" "$(probe "$log" datasets)" "zdata/docker"
+    contains "$firmware: layout json records the pool and its key file" \
+             "$(probe "$log" datalayout)" "zdata /root/.zfs-encrypt.key"
+
+    # The root pool must be exactly as it was: add-data-pool.sh has no business
+    # touching it, and a mistake there is unrecoverable on a real machine.
+    contains "$firmware: the root pool is untouched by the data pool work" \
+             "$(probe "$log" poolhealthy)" "healthy"
+    eq "$firmware: hostid unchanged by add-data-pool.sh" \
+       "$(probe "$log" hostid)" "$TEST_HOSTID"
+
+    # And after a reboot, with nobody there to load the key.
+    contains "$firmware: the data pool imports itself on the next boot" \
+             "$(probe "$log" bootdatapool)" "zdata ONLINE"
+    contains "$firmware: its key loads from the key file at boot" \
+             "$(probe "$log" bootdatakey)" "available"
+    ne "$firmware: its datasets are mounted after the reboot" \
+       "$(probe "$log" bootdatamounts)" "0"
+
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
+}
+
 # --------------------------------------------------------------- driver ------
 
 MODES=(uefi bios)
-PHASES=(install boot degraded replace)
+PHASES=(install boot degraded replace widen narrow datapool)
 
 if [[ ${1-} == uefi || ${1-} == bios ]]; then MODES=("$1"); shift; fi
 [[ $# -gt 0 ]] && PHASES=("$@")
@@ -452,6 +588,9 @@ for mode in "${MODES[@]}"; do
             boot)     phase_boot     "$name" "$mode" "$port" ;;
             degraded) phase_degraded "$name" "$mode" "$port" ;;
             replace)  phase_replace  "$name" "$mode" "$port" ;;
+            widen)    phase_widen    "$name" "$mode" "$port" ;;
+            narrow)   phase_narrow   "$name" "$mode" "$port" ;;
+            datapool) phase_datapool "$name" "$mode" "$port" ;;
             *) _fail "unknown phase" "$ph" ;;
         esac
         ph_secs=$(( $(date +%s) - ph_start ))
