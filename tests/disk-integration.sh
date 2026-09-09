@@ -171,6 +171,28 @@ ne "but the disk GUID is fresh"        "$(dguid "$NEW")"   "$(dguid "$D0")"
 ne "and the esp partition GUID"        "$(pguid "$NEW" 1)" "$(pguid "$D0" 1)"
 ne "and the zfs partition GUID"        "$(pguid "$NEW" 2)" "$(pguid "$D0" 2)"
 
+# The whole point of END_RESERVE_BYTES: a replacement disk that is smaller than
+# the original still has room for the original's partition table, because that
+# table stops 1 GiB short of the end. replace-boot-disk.sh clones the healthy
+# member's layout with `sgdisk --replicate`, so if the slack were not there the
+# replicated table would run off the end of the smaller disk and the ZFS
+# partition would come back short -- which ZFS then refuses to resilver onto.
+#
+# DSMALL is 512 MiB smaller than the others, i.e. inside the slack.
+section "replacement disk that is smaller than the original"
+nuke_disk "$DSMALL"
+expect_ok "replicate the healthy layout onto a smaller disk" \
+    sgdisk --replicate="$DSMALL" "$D0"
+sgdisk --randomize-guids "$DSMALL" >/dev/null
+refresh_links
+expect_ok "the replicated table is valid on the smaller disk" \
+    sgdisk --verify "$DSMALL"
+eq "its zfs partition is still the full size" \
+   "$(blockdev --getsize64 "$(part_path "$DSMALL" 2)")" \
+   "$(blockdev --getsize64 "$(part_path "$D0" 2)")"
+eq "and ends on the same sector as the original" \
+   "$(plast "$DSMALL" 2)" "$(plast "$D0" 2)"
+
 # ---------------------------------------------------------------------------
 section "ZFS mirror"
 if ! command -v zpool >/dev/null || ! grep -qw zfs /proc/filesystems 2>/dev/null; then
@@ -205,6 +227,27 @@ sleep 2
 contains "back to ONLINE"    "$(zpool status "$POOL")" "ONLINE"
 eq       "healthy again"     "$(zpool status -x "$POOL")" "pool '$POOL' is healthy"
 contains "new disk is a member" "$(zpool status -P "$POOL")" "test-disk4-part2"
+
+# The slack, proved at the ZFS layer rather than only in the partition table.
+# A replacement 512 MiB smaller than the original carries the replicated
+# layout, so its ZFS partition is the same size and the pool accepts it. This
+# is the case END_RESERVE_BYTES exists for, and it is the one that strands a
+# recovery at 3am when it does not hold.
+section "ZFS: resilver onto a disk smaller than the original"
+zpool offline -f "$POOL" "$(part_path "$D1" 2)" 2>/dev/null ||     zpool offline "$POOL" "$(part_path "$D1" 2)"
+sleep 1
+expect_ok "zpool replace onto the smaller disk" \
+    zpool replace -f "$POOL" "$(part_path "$D1" 2)" "$(part_path "$DSMALL" 2)"
+for _ in $(seq 1 60); do
+    zpool status "$POOL" | grep -q 'resilvered' && break
+    sleep 1
+done
+sleep 2
+eq       "healthy after resilvering onto it" \
+         "$(zpool status -x "$POOL")" "pool '$POOL' is healthy"
+contains "the smaller disk is a member" \
+         "$(zpool status -P "$POOL")" "test-disk3-part2"
+
 zpool destroy -f "$POOL"
 
 summary "disk-integration"
