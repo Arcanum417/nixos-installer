@@ -48,6 +48,21 @@
 # the guest is crash-consistent, which is what the pull-a-disk phases rely on.
 PVE_DISK_CACHE=${PVE_DISK_CACHE:-writeback}
 
+# Type at the guest ten times faster than the UTM default. The expect drivers
+# pace their keystrokes because fish redrew its input line on every character
+# over an emulated serial console; on a KVM guest, talking to bash with line
+# editing off, that pacing is the single largest source of dead time -- a probe
+# command is ~150 characters, so 30ms each is four and a half seconds of typing
+# before the guest does anything.
+#
+# Measured, both modes in parallel, 75 checks passing either way:
+#   0.03  -> boot 1m56s, wall 18m13s
+#   0.003 -> boot 0m51s, wall 15m26s
+#
+# Safe to tune because each probe ends with a marker the driver waits for, so a
+# too-fast setting fails a probe rather than silently truncating a command.
+export VM_SEND_DELAY=${VM_SEND_DELAY:-0.003}
+
 PVE_STORAGE=${PVE_STORAGE:-local-lvm}
 PVE_ISO_STORAGE=${PVE_ISO_STORAGE:-local}
 PVE_BRIDGE=${PVE_BRIDGE:-vmbr0}

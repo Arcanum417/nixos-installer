@@ -14,7 +14,7 @@ hardware: real OVMF and SeaBIOS, virtio-scsi, and a node that is not a laptop.
 PVE 8.2.5 node: **75 checks, 0 failed, 1 skipped** (the skip is structural —
 BIOS has no ESP). `RESULTS.md` carries the verbatim output.
 
-**About 18 minutes for both modes**, against most of a day on UTM. Run them at
+**About 16 minutes for both modes**, against most of a day on UTM. Run them at
 once with `VM_PARALLEL=1`:
 
 ```sh
@@ -24,16 +24,36 @@ bash tests/vm-boot.sh uefi                 # ~18m for one
 
 | Phase | uefi | bios |
 |---|---|---|
-| `install` | 5m59s | 3m39s |
-| `boot` | 1m56s | 1m52s |
-| `degraded` | 5m07s | 5m02s |
-| `replace` | 4m52s | 5m03s |
-| **total** | **17m54s** | **15m36s** |
+| `install` | 5m27s | 3m10s |
+| `boot` | 0m55s | 0m55s |
+| `degraded` | 4m34s | 3m57s |
+| `replace` | 4m15s | 4m28s |
+| **total** | **15m11s** | **12m30s** |
 
 Run in parallel those overlap, so the wall clock is the slower of the two
-rather than the sum. The install is quicker in BIOS mode because the firmware
-modes build different GRUB derivations and the shared parts of the closure are
-already in the node's store by then.
+rather than the sum — 16m22s measured. The install is quicker in BIOS mode
+because the firmware modes build different GRUB derivations and the shared part
+of the closure is already in the node's store by then.
+
+### Typing speed is a real cost
+
+The expect drivers pace their keystrokes, and the default was chosen for fish
+redrawing its input line over an emulated serial console. On KVM, talking to
+bash with line editing off, that pacing was the single largest source of dead
+time: a probe command is ~150 characters, so 30ms each is four and a half
+seconds of typing before the guest does anything.
+
+This backend therefore sets `VM_SEND_DELAY=0.003`. Measured, both modes in
+parallel, 75 checks passing either way:
+
+| delay | boot phase | wall clock |
+|---|---|---|
+| 0.03 (UTM default) | 1m56s | 18m13s |
+| **0.003** | **0m51s** | **15m26s** |
+
+It is safe to tune because every probe ends with a marker the driver waits for,
+so a too-fast setting fails a probe rather than silently truncating a command.
+Raise it again if you ever point this backend at an emulated guest.
 
 ### Sizing: bigger is not better, and that was measured
 

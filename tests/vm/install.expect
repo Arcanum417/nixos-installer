@@ -23,7 +23,18 @@ set firmware [lindex $argv 3]
 # and truncates the evidence if it is killed. log_file writes as it goes and
 # captures send_user output too, so the "FAILED:" line lands in the log.
 log_file -a $logfile
-set send_slow {1 .05}
+# How fast to type at the guest, as expect's {chars delay} pair.
+#
+# The slow default was chosen for fish over an emulated serial line, where the
+# shell redrew its input on every keystroke. The drivers now hand the session to
+# bash with line editing off, and a probe command is ~150 characters -- at 30ms
+# each that is four and a half seconds of typing per probe before the guest has
+# done anything. On a KVM guest the line is not the constraint.
+#
+# Overridable so a slow or emulated backend can keep the gentler pace. The
+# per-probe end marker is what makes a too-fast setting surface as a failure
+# rather than as a silently truncated command.
+set send_slow [list 1 [expr {[info exists ::env(VM_SEND_DELAY)] ? $::env(VM_SEND_DELAY) : .05}]]
 
 # TCG emulation is slow and nixos-install downloads a closure, so these are
 # deliberately generous. A hung guest costs one timeout, not a wrong answer.
