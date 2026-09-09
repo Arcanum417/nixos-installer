@@ -114,15 +114,27 @@ than the green: three real defects, listed below.
 None of these are failures; they are the honest edges of what this suite
 covers.
 
-- **Whether 8 vCPUs help the sequential stages.** The count was raised from 4
-  after measuring the GRUB build saturating four threads, which justifies it
-  for the compile. Its effect on partitioning, pool creation and the channel
-  copy is **unmeasured**.
+- **Widening and narrowing a mirror.** The VM suite drives
+  `replace-boot-disk.sh` on its default replace path only; `--add` and `--drop`
+  are covered by neither the VM suite nor the unit tests.
+- **The data pool, and `add-data-pool.sh` entirely.** `install-me.sh` is driven
+  with the data pool skipped, so encrypted-pool creation, import and the
+  `/root/.zfs-encrypt.key` handling are evaluation-only, and
+  `add-data-pool.sh` is never executed by any suite.
+- **Resilvering onto a genuinely smaller disk.** `disk-integration.sh` proves
+  the 1 GiB of end slack exists and that a smaller disk is rejected where it
+  should be, but the VM replace hands over a disk of identical size, so the
+  slack has never actually been used for what it is for.
 - **by-id stability across reboots.** The by-id defect below was found here, so
   the mechanism is understood, but a test that installs, reboots several times
   and asserts the recorded paths still resolve has not been written.
-- **The data pool.** `install-me.sh` is driven with the data pool skipped, so
-  encrypted-pool creation and import remain evaluation-only.
+- **The UTM backend since the Proxmox work.** The expect drivers are shared,
+  and they changed a lot while the Proxmox backend was being built: per-probe
+  end markers, a rewritten `enter_bash`, `spawn` without `eval`, and a tunable
+  keystroke pace. UTM keeps its slower default and nothing in those changes is
+  backend-specific, but its last green run predates all of them, so treat the
+  71-check result above as unverified against current HEAD until someone spends
+  the hours to re-run it.
 - **Real hardware.** The guest is emulated. Firmware quirks, real controller
   behaviour and anything timing-dependent are out of reach by construction.
 
