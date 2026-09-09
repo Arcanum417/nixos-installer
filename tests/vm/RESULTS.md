@@ -130,7 +130,7 @@ covers.
 
 Both backends are green. On a Proxmox VE 8.2.5 node with `/dev/kvm`, both
 firmware modes run **in parallel** and pass: **75 checks, 0 failed, 1 skipped,
-18m13s wall clock** for the pair.
+16m22s wall clock** for the pair.
 
 ```
 assets
@@ -173,6 +173,11 @@ uefi
   ok   uefi: pool is ONLINE again, not just not-failing
   ok   uefi: no vdev left DEGRADED after the resilver
   ok   uefi: hostid unchanged by the replace
+  uefi/install       5m27s
+  uefi/boot          0m55s
+  uefi/degraded      4m34s
+  uefi/replace       4m15s
+  total             15m11s
 vm-boot: 38 checks, 0 failed, 0 skipped
   ok   installer ISO cached (1.7G)
   ok   generated configuration evaluates
@@ -213,26 +218,35 @@ bios
   ok   bios: pool is ONLINE again, not just not-failing
   ok   bios: no vdev left DEGRADED after the resilver
   ok   bios: hostid unchanged by the replace
+  bios/install       3m10s
+  bios/boot          0m55s
+  bios/degraded      3m57s
+  bios/replace       4m28s
+  total             12m30s
 vm-boot: 37 checks, 0 failed, 1 skipped
 ```
 
 ### Where the hour went
 
 The first working Proxmox run took about an hour for both modes. It now takes
-about eighteen minutes, and only one of the four changes was a tuning knob:
+about sixteen minutes. Only one of the five changes was a tuning knob; the rest
+were bugs:
 
 | Change | Effect |
 |---|---|
 | The resilver wait grepped for a pattern that never matched | replace 15m -> 5m |
 | The backend was still asking for 4 vCPUs | install 9m -> 5m26s |
 | The two firmware modes run in parallel | ~38m -> ~18m |
-| `enter_bash` waited for a prompt that could not appear | boot 3m -> ~2m, per phase |
+| `enter_bash` waited for a prompt that could not appear | boot 3m -> ~2m |
+| Keystroke pacing tuned for emulation, not KVM | boot 2m -> 0m51s |
 
-Three of those were bugs rather than settings. The resilver loop polled for
-`scan:.*resilvered`, but a scrubbed pool reports `scan: scrub repaired 0B` on
-that line, so it ran its full ceiling of 120 x `sleep 5` after a resilver that
-finishes in seconds. `enter_bash` waited for a prompt that only exists *after*
-the command that sets it, so every attempt burned a 30s timeout.
+The resilver loop polled for `scan:.*resilvered`, but a scrubbed pool reports
+`scan: scrub repaired 0B` on that line, so it ran its full ceiling of 120 x
+`sleep 5` after a resilver that finishes in seconds. `enter_bash` waited for a
+prompt that only exists *after* the command that sets it, so every attempt
+burned a 30s timeout. And the drivers typed at 33 characters a second -- right
+for fish redrawing over an emulated line, four and a half seconds per probe on
+a KVM guest talking to bash.
 
 ### Sizing was tested and the intuition was wrong
 
@@ -274,6 +288,26 @@ and one that was actively dangerous:
   stopping.
 - **`vm_start` believed a "running" VM that was shutting down**, and treated
   the start task finishing as the guest being up.
+
+### Optimisations considered and rejected
+
+Recorded so they are not re-attempted:
+
+- **More vCPUs or memory.** Tested and monotonically worse; the table above has
+  the numbers. The guest transcript proves it received what it was given, so
+  this is host scheduler contention, not nix declining the cores. Scaling the
+  VM to a fraction of the host would make the suite slower.
+- **A local binary cache on the node.** The node pulls from cache.nixos.org at
+  9.4 MB/s, so the install's ~734 store paths are one to two minutes of a phase
+  dominated by compiling GRUB. A cache would be a second-order win and means
+  running and maintaining another service on someone's hypervisor.
+- **Sharing the GRUB build between firmware modes.** They are different
+  derivations -- `efiSupport` differs -- so there is nothing to share.
+- **Shortening the degraded phase.** It is ~4m against ~1m for a healthy boot,
+  and the extra time is the guest importing a pool with a missing member. That
+  is the behaviour under test, not harness overhead: the boot mounts already
+  carry `x-systemd.device-timeout=5s` and the log shows the device job
+  honouring it.
 
 ## The `_1` suffix: retracted, and what it really was
 

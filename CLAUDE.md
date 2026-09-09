@@ -165,7 +165,7 @@ Proxmox one exists because an x86_64 node runs the guest under KVM rather than
 TCG, and it is verified against a live PVE 8.2.5 node.
 
 Both are green. UTM: 71 checks, 0 failed, 1 skipped, several hours. Proxmox:
-75 checks, 0 failed, 1 skipped, **18 minutes** with `VM_PARALLEL=1` running both
+75 checks, 0 failed, 1 skipped, **16 minutes** with `VM_PARALLEL=1` running both
 firmware modes at once. The skip is structural (BIOS has no ESP).
 
 Two things about the Proxmox backend that look like tuning opportunities and
