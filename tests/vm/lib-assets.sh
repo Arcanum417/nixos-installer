@@ -127,8 +127,12 @@ EOF
 # UEFI mode; only the two config files change.
 repack_iso_for_serial () { # repack_iso_for_serial ISO OUT
     local iso=$1 out=$2 work
-    command -v xorriso >/dev/null || return 1
+    # Cache check first. The repack needs xorriso, but *using* an already
+    # repacked ISO does not, and testing for the tool first meant a cached
+    # image was ignored on any shell without it -- reporting "no
+    # serial-enabled installer ISO" while the file sat right there.
     [[ -s $out ]] && return 0
+    command -v xorriso >/dev/null || return 1
 
     work=$(mktemp -d)
     bsdtar -xOf "$iso" EFI/BOOT/grub.cfg      > "$work/grub.cfg"     2>/dev/null || { rm -rf "$work"; return 1; }

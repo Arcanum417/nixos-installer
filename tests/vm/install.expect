@@ -164,6 +164,13 @@ wait_prompt 12 "mounting the NIXINST CD did not return"
 send_log "\n\[step\] CD mounted\n"
 send -s "mkdir -p /root/repo && cp -r /mnt/. /root/repo/\r"
 wait_prompt 12 "copying the repo off the CD did not return"
+# Record what the guest actually got, so a claim about vCPU or memory sizing
+# can be checked against the guest rather than against what the hypervisor was
+# asked for. NIX_BUILD_CORES is what `make -j` inside a derivation follows, and
+# it is the number that decides whether extra vCPUs can be used at all.
+send -s "echo CPUS=\$(nproc) MEM=\$(awk '/MemTotal/{print \$2}' /proc/meminfo) NIXCORES=\$( (nix config show 2>/dev/null || nix show-config 2>/dev/null) | awk -F' = ' '/^cores/{print \$2}') MAXJOBS=\$( (nix config show 2>/dev/null || nix show-config 2>/dev/null) | awk -F' = ' '/^max-jobs/{print \$2}')\r"
+wait_prompt 12 "the guest did not answer the resource probe"
+
 send -s "umount /mnt; chmod +x /root/repo/*.sh\r"
 wait_prompt 12 "chmod did not return"
 send_log "\n\[step\] repo staged\n"

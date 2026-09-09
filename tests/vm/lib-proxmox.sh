@@ -159,10 +159,26 @@ vm_status () { # vm_status NAME -> running|stopped|absent
 }
 
 vm_start () { # vm_start NAME
-    local vmid upid; vmid=$(_pve_vmid "$1")
+    local vmid upid waited=0; vmid=$(_pve_vmid "$1")
+    # "running" can also mean "still shutting down from the previous phase".
+    # Starting on top of that produced a VM whose serial socket appeared and
+    # then vanished, which the driver reported as the console dropping 41
+    # times. Wait for it to settle before deciding.
+    while [[ $(vm_status "$1") == running ]] && (( waited < 60 )); do
+        sleep 2; waited=$((waited+2))
+    done
     [[ $(vm_status "$1") == running ]] && return 0
+
     upid=$(_pve_post "nodes/$PVE_NODE/qemu/$vmid/status/start" | jq -r '.data')
-    _pve_wait_task "$upid" 120
+    _pve_wait_task "$upid" 120 || return 1
+
+    # The task finishing is not the same as the guest running.
+    waited=0
+    while (( waited < 60 )); do
+        [[ $(vm_status "$1") == running ]] && return 0
+        sleep 2; waited=$((waited+2))
+    done
+    return 1
 }
 
 vm_kill () { # vm_kill NAME
@@ -393,8 +409,12 @@ vm_serial_ready () { # vm_serial_ready NAME PORT TRIES
     local name=$1 tries=${3:-60} vmid
     vmid=$(_pve_vmid "$name")
     while (( tries-- > 0 )); do
+        # Twice, a second apart. A socket that exists once may belong to a VM
+        # that is on its way down -- QEMU removes it at stop -- and accepting
+        # that briefly-present socket is what let a phase start against a VM
+        # that was still stopping.
         if ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$(_pve_ssh)" \
-               "test -S /var/run/qemu-server/$vmid.serial0" 2>/dev/null; then
+               "test -S /var/run/qemu-server/$vmid.serial0 && sleep 1 && test -S /var/run/qemu-server/$vmid.serial0" 2>/dev/null; then
             # Export the connect command for the expect drivers. ssh -T and a
             # bare `socat -` keep it byte-clean: a remote pty would translate
             # \n to \r\n and corrupt the transcript.

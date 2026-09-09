@@ -123,7 +123,7 @@ fi
 # so both have to get there. Uploaded by content hash of the name: the repo ISO
 # is rebuilt every run and must overwrite, while the installer ISO is 1.7 GB and
 # is only sent once.
-if [[ $VM_BACKEND == proxmox ]]; then
+if [[ $VM_BACKEND == proxmox && ${VM_ASSETS_READY-0} != 1 ]]; then
     if pve_iso_present "$(basename "$BOOT_ISO")"; then
         _pass "installer ISO already on $PVE_NODE"
     elif pve_upload_iso "$BOOT_ISO"; then
@@ -226,7 +226,7 @@ phase_install () { # phase_install NAME FIRMWARE PORT
     contains "$firmware: pool is a mirror"                       "$(cat "$log")" "mirror-0"
     contains "$firmware: pools exported for a clean first import" "$(cat "$log")" "pools exported"
 
-    vm_wait_stopped "$name" 300 || vm_kill "$name"
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
 }
 
 phase_boot () { # phase_boot NAME FIRMWARE PORT
@@ -295,7 +295,7 @@ phase_boot () { # phase_boot NAME FIRMWARE PORT
         skip "$firmware: removable EFI path" "BIOS mode has no ESP"
     fi
 
-    vm_wait_stopped "$name" 300 || vm_kill "$name"
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
 }
 
 phase_degraded () { # phase_degraded NAME FIRMWARE PORT
@@ -331,7 +331,7 @@ phase_degraded () { # phase_degraded NAME FIRMWARE PORT
     contains "$firmware: zfs-health-check reports the degradation" \
              "$(probe "$log" health_check)" "DEGRADED"
 
-    vm_wait_stopped "$name" 300 || vm_kill "$name"
+    vm_wait_stopped "$name" 600 || vm_kill "$name"
 }
 
 phase_replace () { # phase_replace NAME FIRMWARE PORT
@@ -383,6 +383,40 @@ PHASES=(install boot degraded replace)
 
 if [[ ${1-} == uefi || ${1-} == bios ]]; then MODES=("$1"); shift; fi
 [[ $# -gt 0 ]] && PHASES=("$@")
+
+# The two firmware modes are independent: separate VMs, separate disks,
+# separate consoles. Running them at once halves the wall clock, and the only
+# thing that stops it is the backend.
+#
+# UTM cannot: utm_reload quits and relaunches the whole application, so two
+# modes would keep restarting each other's hypervisor. Proxmox has no such
+# global state -- each VM is a VMID and a unix socket -- so it can.
+#
+# Implemented by re-running this script once per mode rather than by
+# backgrounding the phase loop, because the assertion counters in assert.sh are
+# plain shell variables: a backgrounded subshell would tally its results and
+# throw them away on exit.
+if [[ ${VM_PARALLEL-0} == 1 && ${#MODES[@]} -gt 1 ]]; then
+    if [[ $VM_BACKEND == utm ]]; then
+        echo "VM_PARALLEL ignored: the utm backend restarts UTM globally, so modes cannot overlap"
+    else
+        echo "running ${#MODES[@]} modes in parallel"
+        par_pids=(); par_outs=()
+        for mode in "${MODES[@]}"; do
+            out="$LOGDIR/parallel-$mode.out"
+            par_outs+=("$out")
+            # Assets are already fetched, built and uploaded above; the children
+            # must not race each other re-uploading the same repo ISO.
+            VM_PARALLEL=0 VM_ASSETS_READY=1 \
+                bash "$0" "$mode" "${PHASES[@]}" >"$out" 2>&1 &
+            par_pids+=("$!")
+        done
+        par_rc=0
+        for p in "${par_pids[@]}"; do wait "$p" || par_rc=1; done
+        for o in "${par_outs[@]}"; do cat "$o"; done
+        exit "$par_rc"
+    fi
+fi
 
 # Distinct ports so a leftover VM from a previous run cannot be driven by
 # accident, and so both firmware modes could run concurrently later.
